@@ -1,0 +1,21 @@
+#!/bin/bash
+
+#setup path of YinXing project
+export YINXING_HOME=`pwd`
+
+#make init      # pull submodule
+#make verilog   # create verilog file
+#make clean     # clean build file
+
+mkdir -p logs
+#compile emu file
+make emu CONFIG=MinimalConfig WITH_DRAMSIM3=1 EMU_TRACE=1 EMU_THREADS=8 -j20 2>&1 | tee logs/compile.log.`date '+%Y-%m-%d'`
+head build/SimTop.v >> logs/compile.log.`date '+%Y-%m-%d'`
+
+#run simulation
+./build/emu -i ready-to-run/coremark-riscv64-xs.bin --diff=ready-to-run/riscv64-nemu-interpreter-so 2>&1 | tee logs/coremark10.log.`date '+%Y-%m-%d'`
+head build/SimTop.v >> logs/coremark10.log.`date '+%Y-%m-%d'`
+
+#run simulation
+./build/emu -i ready-to-run/coremark-100-riscv64-xs.bin --diff=ready-to-run/riscv64-nemu-interpreter-so 2>&1 | tee logs/coremark100.log.`date '+%Y-%m-%d'`
+head build/SimTop.v >> logs/coremark100.log.`date '+%Y-%m-%d'`

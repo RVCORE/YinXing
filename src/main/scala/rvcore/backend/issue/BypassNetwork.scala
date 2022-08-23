@@ -1,0 +1,105 @@
+/***************************************************************************************
+* Copyright (c) 2020-2022 Beijing Vcore Technology Co.,Ltd.
+* Copyright (c) 2020-2021 Institute of Computing Technology, Chinese Academy of Sciences
+* Copyright (c) 2020-2021 Peng Cheng Laboratory
+*
+* YinXing is licensed under Mulan PSL v2.
+* You can use this software according to the terms and conditions of the Mulan PSL v2.
+* You may obtain a copy of Mulan PSL v2 at:
+*          http://license.coscl.org.cn/MulanPSL2
+*
+* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+* EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+* MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+*
+* See the Mulan PSL v2 for more details.
+***************************************************************************************/
+
+package rvcore.backend.issue
+
+import chipsalliance.rocketchip.config.Parameters
+import chisel3._
+import chisel3.util._
+import rvcore._
+import utils._
+
+
+class BypassInfo(numWays: Int, dataBits: Int) extends Bundle {
+  val valid = Vec(numWays, Bool())
+  val data = UInt(dataBits.W)
+
+}
+
+class BypassNetworkIO(numWays: Int, numBypass: Int, dataBits: Int) extends Bundle {
+  val hold = Input(Bool())
+  val source = Vec(numWays, Input(UInt(dataBits.W)))
+  val target = Vec(numWays, Output(UInt(dataBits.W)))
+  val bypass = Vec(numBypass, Input(new BypassInfo(numWays, dataBits)))
+
+}
+
+class BypassNetwork(numWays: Int, numBypass: Int, dataBits: Int)(implicit p: Parameters)
+  extends RVCOREModule {
+
+  val io = IO(new BypassNetworkIO(numWays, numBypass, dataBits))
+
+  def doBypass(bypassValid: Seq[Bool], bypassData: Seq[UInt], baseData: UInt, debugIndex: Int = 0): UInt = {
+    val bypassVec = VecInit(bypassValid)
+    val target = Mux(bypassVec.asUInt.orR, Mux1H(bypassValid, bypassData), baseData)
+
+    RVCOREError(PopCount(bypassVec) > 1.U, p"bypass mask ${Binary(bypassVec.asUInt)} is not one-hot\n")
+    bypassVec.zipWithIndex.map { case (m, i) =>
+      RVCOREDebug(bypassVec(i), p"target($debugIndex) bypassed from $i:0x${Hexadecimal(bypassData(i))}\n")
+    }
+
+    target
+  }
+
+}
+
+// Bypass at the right: RegNext(data) and compute the bypassed data at the next clock cycle
+class BypassNetworkRight(numWays: Int, numBypass: Int, dataBits: Int)(implicit p: Parameters)
+  extends BypassNetwork(numWays, numBypass, dataBits) {
+
+  val target_reg = Reg(Vec(numWays, UInt(dataBits.W)))
+  val bypass_reg = Reg(Vec(numBypass, new BypassInfo(numWays, dataBits)))
+
+  when (io.hold) {
+    target_reg := io.target
+    bypass_reg.map(_.valid.map(_ := false.B))
+  }.otherwise {
+    target_reg := io.source
+    for ((by_reg, by_io) <- bypass_reg.zip(io.bypass)) {
+      by_reg.data := by_io.data
+      by_reg.valid := by_io.valid
+    }
+  }
+
+  // bypass data to target
+  for (i <- 0 until numWays) {
+    io.target(i) := doBypass(bypass_reg.map(_.valid(i)), bypass_reg.map(_.data), target_reg(i))
+  }
+
+}
+
+// Bypass at the left: compute the bypassed data and RegNext(bypassed_data)
+class BypassNetworkLeft(numWays: Int, numBypass: Int, dataBits: Int)(implicit p: Parameters)
+  extends BypassNetwork(numWays, numBypass, dataBits) {
+
+  val bypassedData = Reg(io.target.cloneType)
+
+  when (!io.hold) {
+    for ((by, i) <- bypassedData.zipWithIndex) {
+      by := doBypass(io.bypass.map(_.valid(i)), io.bypass.map(_.data), io.source(i))
+    }
+  }
+
+  io.target := bypassedData
+
+}
+
+object BypassNetwork {
+  def apply(numWays: Int, numBypass: Int, dataBits: Int, optFirstStage: Boolean)(implicit p: Parameters) = {
+    Module(new BypassNetworkLeft(numWays, numBypass, dataBits))
+  }
+}

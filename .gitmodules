@@ -1,0 +1,15 @@
+[submodule "rocket-chip"]
+	path = rocket-chip
+	url = https://github.com/RVCORE/rocket-chip
+[submodule "difftest"]
+	path = difftest
+	url = https://github.com/RVCORE/difftest
+[submodule "ready-to-run"]
+	path = ready-to-run
+	url = https://github.com/RVCORE/ready-to-run
+[submodule "huancun"]
+	path = huancun
+	url = https://github.com/RVCORE/huancun
+[submodule "fudian"]
+	path = fudian
+	url = https://github.com/RVCORE/fudian
