@@ -173,7 +173,8 @@ class StatusArray(params: RSParams)(implicit p: Parameters) extends RVCOREModule
     val isFlushed = status.valid && status.robIdx.needFlush(io.redirect)
     val (deqRespValid, deqRespSucc, deqRespType, deqRespDataInvalidSqIdx) = deqResp(i)
     flushedVec(i) := isFlushed || (deqRespValid && deqRespSucc)
-    val realUpdateValid = updateValid(i) && !io.redirect.valid
+    val enqFlushed = if (params.dropOnRedirect) io.redirect.valid else statusNext.robIdx.needFlush(io.redirect)
+    val realUpdateValid = updateValid(i) && !enqFlushed
     statusNext.valid := !flushedVec(i) && (realUpdateValid || status.valid)
     RVCOREError(updateValid(i) && status.valid, p"should not update a valid entry $i\n")
 
@@ -197,14 +198,14 @@ class StatusArray(params: RSParams)(implicit p: Parameters) extends RVCOREModule
     if (params.checkWaitBit) {
       val blockNotReleased = isAfter(statusNext.sqIdx, io.stIssuePtr)
       val storeAddrWaitforIsIssuing = VecInit((0 until StorePipelineWidth).map(i => {
-        io.memWaitUpdateReq.staIssue(i).valid && 
+        io.memWaitUpdateReq.staIssue(i).valid &&
         io.memWaitUpdateReq.staIssue(i).bits.uop.robIdx.value === statusNext.waitForRobIdx.value
       })).asUInt.orR && !statusNext.waitForStoreData && !statusNext.strictWait // is waiting for store addr ready
       val storeDataWaitforIsIssuing = VecInit((0 until StorePipelineWidth).map(i => {
-        io.memWaitUpdateReq.stdIssue(i).valid && 
+        io.memWaitUpdateReq.stdIssue(i).valid &&
         io.memWaitUpdateReq.stdIssue(i).bits.uop.sqIdx.value === statusNext.waitForSqIdx.value
       })).asUInt.orR && statusNext.waitForStoreData
-      statusNext.blocked := Mux(updateValid(i), updateVal(i).blocked, status.blocked) && 
+      statusNext.blocked := Mux(updateValid(i), updateVal(i).blocked, status.blocked) &&
         !storeAddrWaitforIsIssuing &&
         !storeDataWaitforIsIssuing &&
         blockNotReleased

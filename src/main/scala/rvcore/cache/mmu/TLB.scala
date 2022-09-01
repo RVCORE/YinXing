@@ -299,9 +299,9 @@ class TLB(Width: Int, q: TLBParameters)(implicit p: Parameters) extends TlbModul
   RVCOREDebug(ParallelOR(valid)|| ptw.resp.valid, p"CSR: ${csr}\n")
   RVCOREDebug(ParallelOR(valid) || ptw.resp.valid, p"vmEnable:${vmEnable} hit:${Binary(VecInit(hitVec).asUInt)} miss:${Binary(VecInit(missVec).asUInt)}\n")
   for (i <- ptw.req.indices) {
-    RVCOREDebug(ptw.req(i).fire(), p"L2TLB req:${ptw.req(i).bits}\n")
+    RVCOREDebug(ptw.req(i).fire(), p"PTW req:${ptw.req(i).bits}\n")
   }
-  RVCOREDebug(ptw.resp.valid, p"L2TLB resp:${ptw.resp.bits} (v:${ptw.resp.valid}r:${ptw.resp.ready}) \n")
+  RVCOREDebug(ptw.resp.valid, p"PTW resp:${ptw.resp.bits} (v:${ptw.resp.valid}r:${ptw.resp.ready}) \n")
 
   println(s"${q.name}: normal page: ${q.normalNWays} ${q.normalAssociative} ${q.normalReplacer.get} super page: ${q.superNWays} ${q.superAssociative} ${q.superReplacer.get}")
 

@@ -23,9 +23,8 @@ class BusPerfMonitorImp(outer: BusPerfMonitor)
 
   def PERF_CHN[T <: TLChannel](clientName: String, chn: DecoupledIO[T]) = {
 
-    val channelName = chn.bits.channelName.replaceAll(" ", "_").replaceAll("'", "")
-    RVCOREPerfAccumulate(s"${clientName}_${channelName}_fire", chn.fire())
-    RVCOREPerfAccumulate(s"${clientName}_${channelName}_stall", chn.valid && !chn.ready)
+    RVCOREPerfAccumulate(s"$clientName ${chn.bits.channelName} fire", chn.fire())
+    RVCOREPerfAccumulate(s"$clientName ${chn.bits.channelName} stall", chn.valid && !chn.ready)
 
     val ops = chn.bits match {
       case _: TLBundleA => TLMessages.a.map(_._1)
@@ -34,36 +33,34 @@ class BusPerfMonitorImp(outer: BusPerfMonitor)
       case _: TLBundleD => TLMessages.d.map(_._1)
       case _: TLBundleE => Nil
     }
-
-    for((op_raw, i) <- ops.zipWithIndex){
-      val op = s"${op_raw}".replaceAll(" ", "_")
+    for((op, i) <- ops.zipWithIndex){
       chn.bits match {
         case a: TLBundleA =>
-          RVCOREPerfAccumulate(s"${clientName}_${channelName}_${op}_fire",
+          RVCOREPerfAccumulate(s"$clientName ${chn.bits.channelName} $op fire",
             i.U === a.opcode && chn.fire()
           )
-          RVCOREPerfAccumulate(s"${clientName}_${channelName}_${op}_stall",
+          RVCOREPerfAccumulate(s"$clientName ${chn.bits.channelName} $op stall",
             i.U === a.opcode && chn.valid && !chn.ready
           )
         case b: TLBundleB =>
-          RVCOREPerfAccumulate(s"${clientName}_${channelName}_${op}_fire",
+          RVCOREPerfAccumulate(s"$clientName ${chn.bits.channelName} $op fire",
             i.U === b.opcode && chn.fire()
           )
-          RVCOREPerfAccumulate(s"${clientName}_${channelName}_${op}_stall",
+          RVCOREPerfAccumulate(s"$clientName ${chn.bits.channelName} $op stall",
             i.U === b.opcode && chn.valid && !chn.ready
           )
         case c: TLBundleC =>
-          RVCOREPerfAccumulate(s"${clientName}_${channelName}_${op}_fire",
+          RVCOREPerfAccumulate(s"$clientName ${chn.bits.channelName} $op fire",
             i.U === c.opcode && chn.fire()
           )
-          RVCOREPerfAccumulate(s"${clientName}_${channelName}_${op}_stall",
+          RVCOREPerfAccumulate(s"$clientName ${chn.bits.channelName} $op stall",
             i.U === c.opcode && chn.valid && !chn.ready
           )
         case d: TLBundleD =>
-          RVCOREPerfAccumulate(s"${clientName}_${channelName}_${op}_fire",
+          RVCOREPerfAccumulate(s"$clientName ${chn.bits.channelName} $op fire",
             i.U === d.opcode && chn.fire()
           )
-          RVCOREPerfAccumulate(s"${clientName}_${channelName}_${op}_stall",
+          RVCOREPerfAccumulate(s"$clientName ${chn.bits.channelName} $op stall",
             i.U === d.opcode && chn.valid && !chn.ready
           )
       }

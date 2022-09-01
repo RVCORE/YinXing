@@ -3,13 +3,13 @@
 #setup path of YinXing project
 export YINXING_HOME=`pwd`
 
-#make init      # pull submodule
+make init      # pull submodule
 #make verilog   # create verilog file
 #make clean     # clean build file
 
 mkdir -p logs
 #compile emu file
-make emu CONFIG=MinimalConfig WITH_DRAMSIM3=1 EMU_TRACE=1 EMU_THREADS=8 -j20 2>&1 | tee logs/compile.log.`date '+%Y-%m-%d'`
+make emu CONFIG=MinimalConfig EMU_TRACE=1 EMU_THREADS=8 -j20 2>&1 | tee logs/compile.log.`date '+%Y-%m-%d'`
 head build/SimTop.v >> logs/compile.log.`date '+%Y-%m-%d'`
 
 #run simulation

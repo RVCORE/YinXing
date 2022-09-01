@@ -54,6 +54,7 @@ case class FuConfig
   fastImplemented: Boolean = false,
   hasInputBuffer: Boolean = false,
   exceptionOut: Seq[Int] = Seq(),
+  hasLoadError: Boolean = false,
   flushPipe: Boolean = false,
   replayInst: Boolean = false,
   trigger: Boolean = false
@@ -129,7 +130,7 @@ trait HasPipelineReg {
 
   def PipelineReg[TT <: Data](i: Int)(next: TT) = RegEnable(
     next,
-    regEnable(i)
+    enable = regEnable(i)
   )
 
   def S1Reg[TT <: Data](next: TT): TT = PipelineReg[TT](1)(next)

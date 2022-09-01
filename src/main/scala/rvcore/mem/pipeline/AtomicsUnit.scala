@@ -22,7 +22,7 @@ import chisel3._
 import chisel3.util._
 import utils._
 import rvcore._
-import rvcore.cache.{DCacheWordIOWithVaddr, MemoryOpConstants}
+import rvcore.cache.{AtomicWordIO, MemoryOpConstants}
 import rvcore.cache.mmu.{TlbCmd, TlbRequestIO}
 import difftest._
 import rvcore.ExceptionNO._
@@ -34,7 +34,7 @@ class AtomicsUnit(implicit p: Parameters) extends RVCOREModule with MemoryOpCons
     val in            = Flipped(Decoupled(new ExuInput))
     val storeDataIn   = Flipped(Valid(new ExuOutput)) // src2 from rs
     val out           = Decoupled(new ExuOutput)
-    val dcache        = new DCacheWordIOWithVaddr
+    val dcache        = new AtomicWordIO
     val dtlb          = new TlbRequestIO
     val pmpResp       = Flipped(new PMPRespBundle())
     val rsIdx         = Input(UInt(log2Up(IssQueSize).W))
@@ -199,7 +199,7 @@ class AtomicsUnit(implicit p: Parameters) extends RVCOREModule with MemoryOpCons
     io.dcache.req.valid := true.B
     io.dcache.req.bits.cmd := LookupTree(in.uop.ctrl.fuOpType, List(
       LSUOpType.lr_w      -> M_XLR,
-      LSUOpType.sc_w      -> M_RVCOREC,
+      LSUOpType.sc_w      -> M_XSC,
       LSUOpType.amoswap_w -> M_XA_SWAP,
       LSUOpType.amoadd_w  -> M_XA_ADD,
       LSUOpType.amoxor_w  -> M_XA_XOR,
@@ -211,7 +211,7 @@ class AtomicsUnit(implicit p: Parameters) extends RVCOREModule with MemoryOpCons
       LSUOpType.amomaxu_w -> M_XA_MAXU,
 
       LSUOpType.lr_d      -> M_XLR,
-      LSUOpType.sc_d      -> M_RVCOREC,
+      LSUOpType.sc_d      -> M_XSC,
       LSUOpType.amoswap_d -> M_XA_SWAP,
       LSUOpType.amoadd_d  -> M_XA_ADD,
       LSUOpType.amoxor_d  -> M_XA_XOR,

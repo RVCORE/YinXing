@@ -49,43 +49,100 @@ class RawDataModuleTemplate[T <: Data](gen: T, numEntries: Int, numRead: Int, nu
 }
 
 
-class SyncRawDataModuleTemplate[T <: Data](gen: T, numEntries: Int, numRead: Int, numWrite: Int) extends RawDataModuleTemplate(gen, numEntries, numRead, numWrite, true)
-class AsyncRawDataModuleTemplate[T <: Data](gen: T, numEntries: Int, numRead: Int, numWrite: Int) extends RawDataModuleTemplate(gen, numEntries, numRead, numWrite, false)
+class SyncRawDataModuleTemplate[T <: Data](gen: T, numEntries: Int, numRead: Int, numWrite: Int)
+  extends RawDataModuleTemplate(gen, numEntries, numRead, numWrite, true)
+class AsyncRawDataModuleTemplate[T <: Data](gen: T, numEntries: Int, numRead: Int, numWrite: Int)
+  extends RawDataModuleTemplate(gen, numEntries, numRead, numWrite, false)
 
-class DataModuleTemplate[T <: Data](gen: T, numEntries: Int, numRead: Int, numWrite: Int, isSync: Boolean) extends Module {
+class SyncDataModuleTemplate[T <: Data](
+  gen: T,
+  numEntries: Int,
+  numRead: Int,
+  numWrite: Int,
+  parentModule: String,
+  concatData: Boolean = false
+) extends Module {
   val io = IO(new Bundle {
-    val raddr = Vec(numRead,  Input(UInt(log2Up(numEntries).W)))
+    val raddr = Vec(numRead,  Input(UInt(log2Ceil(numEntries).W)))
     val rdata = Vec(numRead,  Output(gen))
     val wen   = Vec(numWrite, Input(Bool()))
-    val waddr = Vec(numWrite, Input(UInt(log2Up(numEntries).W)))
+    val waddr = Vec(numWrite, Input(UInt(log2Ceil(numEntries).W)))
     val wdata = Vec(numWrite, Input(gen))
   })
 
-  val data = Mem(numEntries, gen)
+  override def desiredName: String = s"SyncDataModuleTemplate_${parentModule}_${numEntries}entry"
+  val dataType = if (concatData) UInt(gen.getWidth.W) else gen
 
-  // read ports
-  val raddr = if (isSync) (RegNext(io.raddr)) else io.raddr
-  for (i <- 0 until numRead) {
-    io.rdata(i) := data(raddr(i))
+  val maxBankEntries = if (numEntries >= 2 * 64) 64 else 16
+  val numBanks = (numEntries + maxBankEntries - 1) / maxBankEntries
+  def bankOffset(address: UInt): UInt = {
+    if (numBanks > 1) address(log2Ceil(maxBankEntries) - 1, 0)
+    else address
+  }
+  def bankIndex(address: UInt): UInt = {
+    if (numBanks > 1) address(log2Ceil(numEntries) - 1, log2Ceil(maxBankEntries))
+    else 0.U
   }
 
-  // below is the write ports (with priorities)
-  for (i <- 0 until numWrite) {
-    when (io.wen(i)) {
-      data(io.waddr(i)) := io.wdata(i)
-    }
+  val dataBanks = Seq.tabulate(numBanks)(i => {
+    val bankEntries = if (i < numBanks - 1) maxBankEntries else numEntries - (i * maxBankEntries)
+    Module(new NegedgeDataModuleTemplate(dataType, bankEntries, numRead, numWrite, parentModule))
+  })
+
+  // delay one clock
+  val raddr = RegNext(io.raddr)
+  val wen = RegNext(io.wen)
+  val waddr = io.wen.zip(io.waddr).map(w => RegEnable(w._2, w._1))
+  val wdata = if (concatData) RegNext(VecInit(io.wdata.map(w => w.asTypeOf(dataType)))) else RegNext(io.wdata)
+
+  // input
+  for ((dataBank, i) <- dataBanks.zipWithIndex) {
+    dataBank.io.raddr := raddr.map(bankOffset)
+    dataBank.io.wen := wen.zip(waddr).map{ case (en, addr) => en && bankIndex(addr) === i.U }
+    dataBank.io.waddr := waddr.map(bankOffset)
+    dataBank.io.wdata := wdata
   }
 
-  // DataModuleTemplate should not be used when there're any write conflicts
-  for (i <- 0 until numWrite) {
-    for (j <- i+1 until numWrite) {
-      assert(!(io.wen(i) && io.wen(j) && io.waddr(i) === io.waddr(j)))
-    }
+  // output
+  val rdata = if (concatData) dataBanks.map(_.io.rdata.map(_.asTypeOf(gen))) else dataBanks.map(_.io.rdata)
+  for (j <- 0 until numRead) {
+    val index_dec = UIntToOH(bankIndex(raddr(j)), numBanks)
+    io.rdata(j) := Mux1H(index_dec, rdata.map(_(j)))
   }
 }
 
-class SyncDataModuleTemplate[T <: Data](gen: T, numEntries: Int, numRead: Int, numWrite: Int) extends DataModuleTemplate(gen, numEntries, numRead, numWrite, true)
-class AsyncDataModuleTemplate[T <: Data](gen: T, numEntries: Int, numRead: Int, numWrite: Int) extends DataModuleTemplate(gen, numEntries, numRead, numWrite, false)
+class NegedgeDataModuleTemplate[T <: Data](gen: T, numEntries: Int, numRead: Int, numWrite: Int, parentModule: String) extends Module {
+  val io = IO(new Bundle {
+    val raddr = Vec(numRead,  Input(UInt(log2Ceil(numEntries).W)))
+    val rdata = Vec(numRead,  Output(gen))
+    val wen   = Vec(numWrite, Input(Bool()))
+    val waddr = Vec(numWrite, Input(UInt(log2Ceil(numEntries).W)))
+    val wdata = Vec(numWrite, Input(gen))
+  })
+
+  override def desiredName: String = s"NegedgeDataModule_${parentModule}_${numEntries}entry"
+  val data = Reg(Vec(numEntries, gen))
+
+  // read ports
+  for (i <- 0 until numRead) {
+    val read_by = io.wen.zip(io.waddr).map(w => w._1 && w._2 === io.raddr(i))
+    val addr_dec = UIntToOH(io.raddr(i), numEntries)
+    when (VecInit(read_by).asUInt.orR) {
+      io.rdata(i) := Mux1H(read_by, io.wdata)
+    } .otherwise {
+      io.rdata(i) := Mux1H(addr_dec, data)
+    }
+  }
+
+  // write ports
+  val waddr_dec = io.waddr.map(a => UIntToOH(a))
+  for (j <- 0 until numEntries) {
+    val write_wen = io.wen.zip(waddr_dec).map(w => w._1 && w._2(j))
+    when (VecInit(write_wen).asUInt.orR) {
+      data(j) := Mux1H(write_wen, io.wdata)
+    }
+  }
+}
 
 class Folded1WDataModuleTemplate[T <: Data](gen: T, numEntries: Int, numRead: Int,
   isSync: Boolean, width: Int, hasResetEn: Boolean = true) extends Module {

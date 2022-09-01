@@ -159,9 +159,9 @@ class RedirectGenerator(implicit p: Parameters) extends RVCOREModule
   // stage2CfiUpdate.taken := s1_redirect_bits_reg.cfiUpdate.taken
   // stage2CfiUpdate.isMisPred := s1_redirect_bits_reg.cfiUpdate.isMisPred
 
-  val s2_target = RegEnable(target, s1_redirect_valid_reg)
-  val s2_pc = RegEnable(real_pc, s1_redirect_valid_reg)
-  val s2_redirect_bits_reg = RegEnable(s1_redirect_bits_reg, s1_redirect_valid_reg)
+  val s2_target = RegEnable(target, enable = s1_redirect_valid_reg)
+  val s2_pc = RegEnable(real_pc, enable = s1_redirect_valid_reg)
+  val s2_redirect_bits_reg = RegEnable(s1_redirect_bits_reg, enable = s1_redirect_valid_reg)
   val s2_redirect_valid_reg = RegNext(s1_redirect_valid_reg && !io.flush, init = false.B)
 
   io.stage3Redirect.valid := s2_redirect_valid_reg
@@ -185,16 +185,16 @@ class RedirectGenerator(implicit p: Parameters) extends RVCOREModule
 
   RVCOREError(io.memPredUpdate.valid && RegNext(s1_real_pc_from_frontend) =/= RegNext(real_pc), "s1_real_pc error")
 
-  // // recover runahead checkpoint if redirect
-  // if (!env.FPGAPlatform) {
-  //   val runahead_redirect = Module(new DifftestRunaheadRedirectEvent)
-  //   runahead_redirect.io.clock := clock
-  //   runahead_redirect.io.coreid := io.hartId
-  //   runahead_redirect.io.valid := io.stage3Redirect.valid
-  //   runahead_redirect.io.pc :=  s2_pc // for debug only
-  //   runahead_redirect.io.target_pc := s2_target // for debug only
-  //   runahead_redirect.io.checkpoint_id := io.stage3Redirect.bits.debug_runahead_checkpoint_id // make sure it is right
-  // }
+  // recover runahead checkpoint if redirect
+  if (!env.FPGAPlatform) {
+    val runahead_redirect = Module(new DifftestRunaheadRedirectEvent)
+    runahead_redirect.io.clock := clock
+    runahead_redirect.io.coreid := io.hartId
+    runahead_redirect.io.valid := io.stage3Redirect.valid
+    runahead_redirect.io.pc :=  s2_pc // for debug only
+    runahead_redirect.io.target_pc := s2_target // for debug only
+    runahead_redirect.io.checkpoint_id := io.stage3Redirect.bits.debug_runahead_checkpoint_id // make sure it is right
+  }
 }
 
 class CtrlBlock(implicit p: Parameters) extends LazyModule
@@ -299,7 +299,7 @@ class CtrlBlockImp(outer: CtrlBlock)(implicit p: Parameters) extends LazyModuleI
 
   val flushRedirectReg = Wire(Valid(new Redirect))
   flushRedirectReg.valid := RegNext(flushRedirect.valid, init = false.B)
-  flushRedirectReg.bits := RegEnable(flushRedirect.bits, flushRedirect.valid)
+  flushRedirectReg.bits := RegEnable(flushRedirect.bits, enable = flushRedirect.valid)
 
   val stage2Redirect = Mux(flushRedirect.valid, flushRedirect, redirectGen.io.stage2Redirect)
   // val stage3Redirect = Mux(flushRedirectReg.valid, flushRedirectReg, redirectGen.io.stage3Redirect)
@@ -364,7 +364,7 @@ class CtrlBlockImp(outer: CtrlBlock)(implicit p: Parameters) extends LazyModuleI
   io.frontend.toFtq.for_redirect_gen.flushRedirect.bits := frontendFlushBits
 
   io.frontend.toFtq.for_redirect_gen.frontendFlushTarget := RegNext(flushTarget)
-  
+
 
   val pendingRedirect = RegInit(false.B)
   when (stage2Redirect.valid) {
@@ -375,12 +375,14 @@ class CtrlBlockImp(outer: CtrlBlock)(implicit p: Parameters) extends LazyModuleI
 
   decode.io.in <> io.frontend.cfVec
   decode.io.csrCtrl := RegNext(io.csrCtrl)
+  decode.io.intRat <> rat.io.intReadPorts
+  decode.io.fpRat <> rat.io.fpReadPorts
 
   // memory dependency predict
   // when decode, send fold pc to mdp
   for (i <- 0 until DecodeWidth) {
     val mdp_foldpc = Mux(
-      decode.io.out(i).fire(),
+      decode.io.out(i).fire,
       decode.io.in(i).bits.foldpc,
       rename.io.in(i).bits.cf.foldpc
     )
@@ -401,19 +403,7 @@ class CtrlBlockImp(outer: CtrlBlock)(implicit p: Parameters) extends LazyModuleI
   lfst.io.dispatch <> dispatch.io.lfst
 
   rat.io.robCommits := rob.io.commits
-  for ((r, i) <- rat.io.intReadPorts.zipWithIndex) {
-    val raddr = decode.io.out(i).bits.ctrl.lsrc.take(2) :+ decode.io.out(i).bits.ctrl.ldest
-    r.map(_.addr).zip(raddr).foreach(x => x._1 := x._2)
-    rename.io.intReadPorts(i) := r.map(_.data)
-    r.foreach(_.hold := !rename.io.in(i).ready)
-  }
   rat.io.intRenamePorts := rename.io.intRenamePorts
-  for ((r, i) <- rat.io.fpReadPorts.zipWithIndex) {
-    val raddr = decode.io.out(i).bits.ctrl.lsrc.take(3) :+ decode.io.out(i).bits.ctrl.ldest
-    r.map(_.addr).zip(raddr).foreach(x => x._1 := x._2)
-    rename.io.fpReadPorts(i) := r.map(_.data)
-    r.foreach(_.hold := !rename.io.in(i).ready)
-  }
   rat.io.fpRenamePorts := rename.io.fpRenamePorts
   rat.io.debug_int_rat <> io.debug_int_rat
   rat.io.debug_fp_rat <> io.debug_fp_rat
@@ -422,12 +412,17 @@ class CtrlBlockImp(outer: CtrlBlock)(implicit p: Parameters) extends LazyModuleI
   for (i <- 0 until RenameWidth) {
     PipelineConnect(decode.io.out(i), rename.io.in(i), rename.io.in(i).ready,
       stage2Redirect.valid || pendingRedirect)
+    rename.io.intReadPorts(i) := rat.io.intReadPorts(i).map(_.data)
+    rename.io.fpReadPorts(i) := rat.io.fpReadPorts(i).map(_.data)
+    if (i < RenameWidth - 1) {
+      rename.io.fusionInfo(i) := RegEnable(decode.io.fusionInfo(i), decode.io.out(i).fire)
+    }
+    rename.io.waittable(i) := RegEnable(waittable.io.rdata(i), decode.io.out(i).fire)
   }
 
   rename.io.redirect <> stage2Redirect
   rename.io.robCommits <> rob.io.commits
   rename.io.ssit <> ssit.io.rdata
-  rename.io.waittable <> RegNext(waittable.io.rdata)
 
   // pipeline between rename and dispatch
   for (i <- 0 until RenameWidth) {
@@ -488,8 +483,21 @@ class CtrlBlockImp(outer: CtrlBlock)(implicit p: Parameters) extends LazyModuleI
     val perfEventsEu1     = Input(Vec(6, new PerfEvent))
   })
 
-  val allPerfEvents = Seq(decode, rename, dispatch, intDq, fpDq, lsDq, rob).flatMap(_.getPerf)
-  val hpmEvents = allPerfEvents ++ perfinfo.perfEventsEu0 ++ perfinfo.perfEventsEu1 ++ perfinfo.perfEventsRs
-  val perfEvents = HPerfMonitor(csrevents, hpmEvents).getPerfEvents
+  val perfFromUnits = Seq(decode, rename, dispatch, intDq, fpDq, lsDq, rob).flatMap(_.getPerfEvents)
+  val perfFromIO    = perfinfo.perfEventsEu0.map(x => ("perfEventsEu0", x.value)) ++
+                        perfinfo.perfEventsEu1.map(x => ("perfEventsEu1", x.value)) ++
+                        perfinfo.perfEventsRs.map(x => ("perfEventsRs", x.value))
+  val perfBlock     = Seq()
+  // let index = 0 be no event
+  val allPerfEvents = Seq(("noEvent", 0.U)) ++ perfFromUnits ++ perfFromIO ++ perfBlock
+
+  if (printEventCoding) {
+    for (((name, inc), i) <- allPerfEvents.zipWithIndex) {
+      println("CtrlBlock perfEvents Set", name, inc, i)
+    }
+  }
+
+  val allPerfInc = allPerfEvents.map(_._2.asTypeOf(new PerfEvent))
+  val perfEvents = HPerfMonitor(csrevents, allPerfInc).getPerfEvents
   generatePerfEvent()
 }

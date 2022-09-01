@@ -141,7 +141,7 @@ abstract class RVCORECoreBase()(implicit p: config.Parameters) extends LazyModul
   val plic_int_sink = IntSinkNode(IntSinkPortSimple(2, 1))
   // outer facing nodes
   val frontend = LazyModule(new Frontend())
-  val ptw = LazyModule(new L2TLBWrapper())
+  val ptw = LazyModule(new PTWWrapper())
   val ptw_to_l2_buffer = LazyModule(new TLBuffer)
   val csrOut = BundleBridgeSource(Some(() => new DistributedCSRIO()))
   val busPMU = BusPerfMonitor(enable = !debugOpts.FPGAPlatform)
@@ -150,7 +150,6 @@ abstract class RVCORECoreBase()(implicit p: config.Parameters) extends LazyModul
 
   busPMU := l1d_logger
   l1_xbar :=* busPMU
-
 
   ptw_to_l2_buffer.node := ptw.node
 
@@ -278,7 +277,6 @@ class RVCORECoreImp(outer: RVCORECoreBase) extends LazyModuleImp(outer)
   with HasSoCParameter {
   val io = IO(new Bundle {
     val hartId = Input(UInt(64.W))
-    val reset_vector = Input(UInt(PAddrBits.W))
     val cpu_halt = Output(Bool())
     val l2_pf_enable = Output(Bool())
     val perfEvents = Input(Vec(numPCntHc * coreParams.L2NBanks, new PerfEvent))
@@ -295,12 +293,10 @@ class RVCORECoreImp(outer: RVCORECoreBase) extends LazyModuleImp(outer)
   val ptw_to_l2_buffer = outer.ptw_to_l2_buffer.module
   val exuBlocks = outer.exuBlocks.map(_.module)
 
-  frontend.io.hartId  := io.hartId
   ctrlBlock.io.hartId := io.hartId
   exuBlocks.foreach(_.io.hartId := io.hartId)
   memBlock.io.hartId := io.hartId
   outer.wbArbiter.module.io.hartId := io.hartId
-  frontend.io.reset_vector := io.reset_vector
 
   io.cpu_halt := ctrlBlock.io.cpu_halt
 
@@ -310,12 +306,14 @@ class RVCORECoreImp(outer: RVCORECoreBase) extends LazyModuleImp(outer)
   outer.wbArbiter.module.io.in <> allWriteback
   val rfWriteback = outer.wbArbiter.module.io.out
 
+  // memblock error exception writeback, 1 cycle after normal writeback
+  wb2Ctrl.io.delayedLoadError <> memBlock.io.delayedLoadError
+
   wb2Ctrl.io.redirect <> ctrlBlock.io.redirect
   outer.wb2Ctrl.generateWritebackIO()
 
   io.beu_errors.icache <> frontend.io.error.toL1BusErrorUnitInfo()
   io.beu_errors.dcache <> memBlock.io.error.toL1BusErrorUnitInfo()
-
 
   require(exuBlocks.count(_.fuConfigs.map(_._1).contains(JumpCSRExeUnitCfg)) == 1)
   val csrFenceMod = exuBlocks.filter(_.fuConfigs.map(_._1).contains(JumpCSRExeUnitCfg)).head
@@ -469,7 +467,6 @@ class RVCORECoreImp(outer: RVCORECoreBase) extends LazyModuleImp(outer)
     )
   )
 
-  ResetGen(resetTree, reset.asBool, !debugOpts.FPGAPlatform)
   val l1i_to_l2_buffer = outer.l1i_to_l2_buffer
 //  val l1d_to_l2_bufferOpt = outer.l1d_to_l2_bufferOpt
   val ptw_to_l2_bufferOpt = outer.ptw_to_l2_bufferOpt
@@ -478,6 +475,6 @@ class RVCORECoreImp(outer: RVCORECoreBase) extends LazyModuleImp(outer)
       //l1d_to_l2_bufferOpt.map(_.module) ++
       ptw_to_l2_bufferOpt.map(_.module)
   )
-  ResetGen(resetChain, reset.asBool, !debugOpts.FPGAPlatform)
+  ResetGen(resetTree, reset.asBool, !debugOpts.FPGAPlatform)
 
 }

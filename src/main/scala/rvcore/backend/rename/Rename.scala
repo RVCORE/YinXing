@@ -22,7 +22,7 @@ import chisel3._
 import chisel3.util._
 import rvcore._
 import utils._
-import rvcore.backend.decode.{Imm_I, Imm_LUI_LOAD, Imm_U}
+import rvcore.backend.decode.{FusionDecodeInfo, Imm_I, Imm_LUI_LOAD, Imm_U}
 import rvcore.backend.rob.RobPtr
 import rvcore.backend.rename.freelist._
 import rvcore.mem.mdp._
@@ -33,6 +33,7 @@ class Rename(implicit p: Parameters) extends RVCOREModule with HasPerfEvents {
     val robCommits = Flipped(new RobCommitIO)
     // from decode
     val in = Vec(RenameWidth, Flipped(DecoupledIO(new CfCtrl)))
+    val fusionInfo = Vec(DecodeWidth - 1, Flipped(new FusionDecodeInfo))
     // ssit read result
     val ssit = Flipped(Vec(RenameWidth, Output(new SSITEntry)))
     // waittable read result
@@ -65,7 +66,7 @@ class Rename(implicit p: Parameters) extends RVCOREModule with HasPerfEvents {
     fl.io.walk := io.robCommits.isWalk
     // when isWalk, use stepBack to restore head pointer of free list
     // (if ME enabled, stepBack of intFreeList should be useless thus optimized out)
-    fl.io.stepBack := PopCount(io.robCommits.valid.zip(io.robCommits.info).map{case (v, i) => v && needDestRegCommit(isFp, i)})
+    fl.io.stepBack := PopCount(io.robCommits.walkValid.zip(io.robCommits.info).map{case (v, i) => v && needDestRegCommit(isFp, i)})
   }
   // walk has higher priority than allocation and thus we don't use isWalk here
   // only when both fp and int free list and dispatch1 has enough space can we do allocation
@@ -105,7 +106,6 @@ class Rename(implicit p: Parameters) extends RVCOREModule with HasPerfEvents {
   val hasValid = Cat(io.in.map(_.valid)).orR
 
   val isMove = io.in.map(_.bits.ctrl.isMove)
-  val intPsrc = Wire(Vec(RenameWidth, UInt()))
 
   val intSpecWen = Wire(Vec(RenameWidth, Bool()))
   val fpSpecWen = Wire(Vec(RenameWidth, Bool()))
@@ -136,15 +136,18 @@ class Rename(implicit p: Parameters) extends RVCOREModule with HasPerfEvents {
 
     uops(i).robIdx := robIdxHead + PopCount(io.in.take(i).map(_.valid))
 
-    val intPhySrcVec = io.intReadPorts(i).take(2)
-    val intOldPdest = io.intReadPorts(i).last
-    intPsrc(i) := intPhySrcVec(0)
-    val fpPhySrcVec = io.fpReadPorts(i).take(3)
-    val fpOldPdest = io.fpReadPorts(i).last
-    uops(i).psrc(0) := Mux(uops(i).ctrl.srcType(0) === SrcType.reg, intPhySrcVec(0), fpPhySrcVec(0))
-    uops(i).psrc(1) := Mux(uops(i).ctrl.srcType(1) === SrcType.reg, intPhySrcVec(1), fpPhySrcVec(1))
-    uops(i).psrc(2) := fpPhySrcVec(2)
-    uops(i).old_pdest := Mux(uops(i).ctrl.rfWen, intOldPdest, fpOldPdest)
+    uops(i).psrc(0) := Mux(uops(i).ctrl.srcType(0) === SrcType.reg, io.intReadPorts(i)(0), io.fpReadPorts(i)(0))
+    uops(i).psrc(1) := Mux(uops(i).ctrl.srcType(1) === SrcType.reg, io.intReadPorts(i)(1), io.fpReadPorts(i)(1))
+    // int psrc2 should be bypassed from next instruction if it is fused
+    if (i < RenameWidth - 1) {
+      when (io.fusionInfo(i).rs2FromRs2 || io.fusionInfo(i).rs2FromRs1) {
+        uops(i).psrc(1) := Mux(io.fusionInfo(i).rs2FromRs2, io.intReadPorts(i + 1)(1), io.intReadPorts(i + 1)(0))
+      }.elsewhen(io.fusionInfo(i).rs2FromZero) {
+        uops(i).psrc(1) := 0.U
+      }
+    }
+    uops(i).psrc(2) := io.fpReadPorts(i)(2)
+    uops(i).old_pdest := Mux(uops(i).ctrl.rfWen, io.intReadPorts(i).last, io.fpReadPorts(i).last)
     uops(i).eliminatedMove := isMove(i)
 
     // update pdest

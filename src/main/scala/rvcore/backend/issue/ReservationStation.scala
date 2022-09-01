@@ -48,9 +48,9 @@ case class RSParams
   var isJump: Boolean = false,
   var isAlu: Boolean = false,
   var isStore: Boolean = false,
+  var isStoreData: Boolean = false,
   var isMul: Boolean = false,
   var isLoad: Boolean = false,
-  var isStoreData: Boolean = false,
   var exuCfg: Option[ExuConfig] = None
 ){
   def allWakeup: Int = numFastWakeup + numWakeup
@@ -61,7 +61,8 @@ case class RSParams
   def delayedRf: Boolean = exuCfg.get == StdExeUnitCfg
   def needScheduledBit: Boolean = hasFeedback || delayedRf || hasMidState
   def needBalance: Boolean = exuCfg.get.needLoadBalance
-  def numSelect: Int = numDeq// + (if (oldestFirst._1) 1 else 0)
+  def numSelect: Int = numDeq + (if (oldestFirst._1) 1 else 0)
+  def dropOnRedirect: Boolean = !(isLoad || isStore || isStoreData)
 
   override def toString: String = {
     s"type ${exuCfg.get.name}, size $numEntries, enq $numEnq, deq $numDeq, numSrc $numSrc, fast $numFastWakeup, wakeup $numWakeup"
@@ -75,7 +76,7 @@ class ReservationStationWrapper(implicit p: Parameters) extends LazyModule with 
     require(params.numEnq == 0, "issue ports should be added before dispatch ports")
     params.dataBits = XLEN
     params.dataIdBits = PhyRegIdxWidth
-    //params.numEntries += IssQueSize * deq
+    params.numEntries += IssQueSize * deq
     params.numDeq = deq
     params.numSrc = max(params.numSrc, max(cfg.intSrcCnt, cfg.fpSrcCnt))
     params.exuCfg = Some(cfg)
@@ -232,8 +233,8 @@ class ReservationStationIO(params: RSParams)(implicit p: Parameters) extends RVC
     val jumpPc = Input(UInt(VAddrBits.W))
     val jalr_target = Input(UInt(VAddrBits.W))
   }) else None
-  val feedback = if (params.hasFeedback) Some(Vec(params.numDeq, 
-    Flipped(new MemRSFeedbackIO) 
+  val feedback = if (params.hasFeedback) Some(Vec(params.numDeq,
+    Flipped(new MemRSFeedbackIO)
   )) else None
   val checkwait = if (params.checkWaitBit) Some(new Bundle {
     val stIssuePtr = Input(new SqPtr())
@@ -273,15 +274,20 @@ class ReservationStation(params: RSParams)(implicit p: Parameters) extends RVCOR
     */
   // enqueue from dispatch
   select.io.validVec := statusArray.io.isValid
-  // agreement with dispatch: don't enqueue when io.redirect.valid
-  val doEnqueue = VecInit(io.fromDispatch.map(_.fire && !io.redirect.valid))
-  val enqShouldNotFlushed = io.fromDispatch.map(d => d.fire && !d.bits.robIdx.needFlush(io.redirect))
-  RVCOREPerfAccumulate("wrong_stall", Mux(io.redirect.valid, PopCount(enqShouldNotFlushed), 0.U))
+  val doEnqueue = Wire(Vec(params.numEnq, Bool()))
+  val enqNotFlushed = io.fromDispatch.map(d => d.fire && !d.bits.robIdx.needFlush(io.redirect))
+  if (params.dropOnRedirect) {
+    doEnqueue := io.fromDispatch.map(_.fire && !io.redirect.valid)
+    RVCOREPerfAccumulate("wrong_stall", Mux(io.redirect.valid, PopCount(enqNotFlushed), 0.U))
+  }
+  else {
+    doEnqueue := enqNotFlushed
+  }
   val needFpSource = io.fromDispatch.map(_.bits.needRfRPort(0, true, false))
   for (i <- 0 until params.numEnq) {
     io.fromDispatch(i).ready := select.io.allocate(i).valid
     // for better timing, we update statusArray no matter there's a flush or not
-    statusArray.io.update(i).enable := io.fromDispatch(i).fire()
+    statusArray.io.update(i).enable := io.fromDispatch(i).fire
     statusArray.io.update(i).addr := select.io.allocate(i).bits
     statusArray.io.update(i).data.valid := true.B
     statusArray.io.update(i).data.scheduled := params.delayedRf.B && needFpSource(i)
@@ -353,40 +359,39 @@ class ReservationStation(params: RSParams)(implicit p: Parameters) extends RVCOR
   }
   val issueVec = Wire(Vec(params.numDeq, Valid(UInt(params.numEntries.W))))
   val oldestOverride = Wire(Vec(params.numDeq, Bool()))
-  //if (params.oldestFirst._1) {
-  //if (false.B) {
-  //  // When the reservation station has oldestFirst, we need to issue the oldest instruction if possible.
-  //  // However, in this case, the select policy always selects at maximum numDeq instructions to issue.
-  //  // Thus, we need an arbitration between the numDeq + 1 possibilities.
-  //  val oldestSelection = Module(new OldestSelection(params))
-  //  oldestSelection.io.in := RegNext(select.io.grant)
-  //  oldestSelection.io.oldest := RegNext(oldestSel)
-  //  // By default, we use the default victim index set in parameters.
-  //  oldestSelection.io.canOverride := (0 until params.numDeq).map(_ == params.oldestFirst._3).map(_.B)
-  //  // When deq width is two, we have a balance bit to indicate selection priorities.
-  //  // For better performance, we decide the victim according to selection priorities.
-  //  if (params.needBalance && params.oldestFirst._2 && params.numDeq == 2) {
-  //    // When balance2 bit is set, selection prefers the second selection port.
-  //    // Thus, the first is the victim if balance2 bit is set.
-  //    oldestSelection.io.canOverride(0) := select.io.grantBalance
-  //    oldestSelection.io.canOverride(1) := !select.io.grantBalance
-  //  }
-  //  issueVec := oldestSelection.io.out
-  //  oldestOverride := oldestSelection.io.isOverrided
-  //  // The oldest must be selected, though it may be the same as others.
-  //  val oldestReady = Mux1H(oldestOverride, s1_out.map(_.ready))
-  //  statusArray.io.issueGranted.last.valid := oldestSelection.io.oldest.valid && oldestReady
-  //  statusArray.io.issueGranted.last.bits := oldestSelection.io.oldest.bits
-  //  for (i <- 0 until params.numDeq) {
-  //    when (oldestSelection.io.isOverrided(i)) {
-  //      statusArray.io.issueGranted(i).valid := false.B
-  //    }
-  //  }
-  //}
-  //else {
+  if (params.oldestFirst._1) {
+    // When the reservation station has oldestFirst, we need to issue the oldest instruction if possible.
+    // However, in this case, the select policy always selects at maximum numDeq instructions to issue.
+    // Thus, we need an arbitration between the numDeq + 1 possibilities.
+    val oldestSelection = Module(new OldestSelection(params))
+    oldestSelection.io.in := RegNext(select.io.grant)
+    oldestSelection.io.oldest := RegNext(oldestSel)
+    // By default, we use the default victim index set in parameters.
+    oldestSelection.io.canOverride := (0 until params.numDeq).map(_ == params.oldestFirst._3).map(_.B)
+    // When deq width is two, we have a balance bit to indicate selection priorities.
+    // For better performance, we decide the victim according to selection priorities.
+    if (params.needBalance && params.oldestFirst._2 && params.numDeq == 2) {
+      // When balance2 bit is set, selection prefers the second selection port.
+      // Thus, the first is the victim if balance2 bit is set.
+      oldestSelection.io.canOverride(0) := select.io.grantBalance
+      oldestSelection.io.canOverride(1) := !select.io.grantBalance
+    }
+    issueVec := oldestSelection.io.out
+    oldestOverride := oldestSelection.io.isOverrided
+    // The oldest must be selected, though it may be the same as others.
+    val oldestReady = Mux1H(oldestOverride, s1_out.map(_.ready))
+    statusArray.io.issueGranted.last.valid := oldestSelection.io.oldest.valid && oldestReady
+    statusArray.io.issueGranted.last.bits := oldestSelection.io.oldest.bits
+    for (i <- 0 until params.numDeq) {
+      when (oldestSelection.io.isOverrided(i)) {
+        statusArray.io.issueGranted(i).valid := false.B
+      }
+    }
+  }
+  else {
     issueVec := RegNext(select.io.grant)
     oldestOverride.foreach(_ := false.B)
-  //}
+  }
 
   // Do the read data arbitration
   val s1_is_first_issue = Wire(Vec(params.numDeq, Bool()))
@@ -776,4 +781,3 @@ class ReservationStation(params: RSParams)(implicit p: Parameters) extends RVCOR
 
   def size: Int = params.numEntries
 }
-

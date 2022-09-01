@@ -444,9 +444,9 @@ class BridgeTLBIO(Width: Int)(implicit p: Parameters) extends MMUIOBaseBundle {
 }
 
 
-/****************************  L2TLB  *************************************/
+/****************************  PTW  *************************************/
 abstract class PtwBundle(implicit p: Parameters) extends RVCOREBundle with HasPtwConst
-abstract class PtwModule(outer: L2TLB) extends LazyModuleImp(outer)
+abstract class PtwModule(outer: PTW) extends LazyModuleImp(outer)
   with HasRVCOREParameter with HasPtwConst
 
 class PteBundle(implicit p: Parameters) extends PtwBundle{
@@ -640,9 +640,9 @@ class PTWEntriesWithEcc(eccCode: Code, num: Int, tagLen: Int, level: Int, hasPer
     val data = entries.asUInt()
     val res = Wire(Vec(ecc_info._3 + 1, Bool()))
     for (i <- 0 until ecc_info._3) {
-      res(i) := {if (ecc_info._2 != 0) eccCode.decode(Cat(ecc((i+1)*ecc_info._2-1, i*ecc_info._2), data((i+1)*ecc_block-1, i*ecc_block))).error else false.B}
+      res(i) := eccCode.decode(Cat(ecc((i+1)*ecc_info._2-1, i*ecc_info._2), data((i+1)*ecc_block-1, i*ecc_block))).error
     }
-    if (ecc_info._2 != 0 && ecc_info._4 != 0) {
+    if (ecc_info._4 != 0) {
       res(ecc_info._3) := eccCode.decode(
         Cat(ecc(ecc_info._1-1, ecc_info._2*ecc_info._3), data(data.getWidth-1, ecc_info._3*ecc_block))).error
     } else { res(ecc_info._3) := false.B }
@@ -688,7 +688,7 @@ class PtwResp(implicit p: Parameters) extends PtwBundle {
   }
 }
 
-class L2TLBIO(implicit p: Parameters) extends PtwBundle {
+class PtwIO(implicit p: Parameters) extends PtwBundle {
   val tlb = Vec(PtwWidth, Flipped(new TlbPtwIO))
   val sfence = Input(new SfenceBundle)
   val csr = new Bundle {

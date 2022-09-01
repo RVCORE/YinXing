@@ -71,6 +71,7 @@ class MemBlockImp(outer: MemBlock) extends LazyModuleImp(outer)
     val stIssuePtr = Output(new SqPtr())
     // out
     val writeback = Vec(exuParameters.LsExuCnt + exuParameters.StuCnt, DecoupledIO(new ExuOutput))
+    val delayedLoadError = Vec(exuParameters.LduCnt, Output(Bool()))
     val otherFastWakeup = Vec(exuParameters.LduCnt + 2 * exuParameters.StuCnt, ValidIO(new MicroOp))
     // misc
     val stIn = Vec(exuParameters.StuCnt, ValidIO(new ExuInput))
@@ -80,7 +81,7 @@ class MemBlockImp(outer: MemBlock) extends LazyModuleImp(outer)
     val tlbCsr = Input(new TlbCsrBundle)
     val fenceToSbuffer = Flipped(new FenceToSbuffer)
     val enqLsq = new LsqEnqIO
-    val memPredUpdate = Vec(exuParameters.StuCnt, Input(new MemPredUpdateReq))
+    // val memPredUpdate = Vec(exuParameters.StuCnt, Input(new MemPredUpdateReq))
     val lsqio = new Bundle {
       val exceptionAddr = new ExceptionAddrIO // to csr
       val rob = Flipped(new RobLsqIO) // rob to lsq
@@ -126,9 +127,9 @@ class MemBlockImp(outer: MemBlock) extends LazyModuleImp(outer)
 
   val atomicsUnit = Module(new AtomicsUnit)
 
-  // Atom inst comes from sta / std, then its result 
+  // Atom inst comes from sta / std, then its result
   // will be writebacked using load writeback port
-  // 
+  //
   // However, atom exception will be writebacked to rob
   // using store writeback port
 
@@ -161,8 +162,8 @@ class MemBlockImp(outer: MemBlock) extends LazyModuleImp(outer)
   atomicsUnit.io.hartId := io.hartId
 
   // dtlb
-  val sfence = RegNext(io.sfence)
-  val tlbcsr = RegNext(io.tlbCsr)
+  val sfence = RegNext(RegNext(io.sfence))
+  val tlbcsr = RegNext(RegNext(io.tlbCsr))
   val dtlb_ld = VecInit(Seq.fill(exuParameters.LduCnt){
     val tlb_ld = Module(new TLB(1, ldtlbParams))
     tlb_ld.io // let the module have name in waveform
@@ -278,15 +279,21 @@ class MemBlockImp(outer: MemBlock) extends LazyModuleImp(outer)
 
     // Lsq to load unit's rs
 
-    // passdown to lsq
+    // passdown to lsq (load s2)
     lsq.io.loadIn(i) <> loadUnits(i).io.lsq.loadIn
     lsq.io.ldout(i) <> loadUnits(i).io.lsq.ldout
     lsq.io.loadDataForwarded(i) <> loadUnits(i).io.lsq.loadDataForwarded
     lsq.io.trigger(i) <> loadUnits(i).io.lsq.trigger
 
+    // passdown to lsq (load s3)
+    lsq.io.dcacheRequireReplay(i) <> loadUnits(i).io.lsq.dcacheRequireReplay
+    lsq.io.delayedLoadError(i) <> loadUnits(i).io.delayedLoadError
+
+    // alter writeback exception info
+    io.delayedLoadError(i) := loadUnits(i).io.lsq.delayedLoadError
+
     // update mem dependency predictor
-    io.memPredUpdate(i) := DontCare
-    lsq.io.dcacheRequireReplay(i)    <> loadUnits(i).io.lsq.dcacheRequireReplay
+    // io.memPredUpdate(i) := DontCare
 
     // Trigger Regs
     // addr: 0-2 for store, 3-5 for load
@@ -448,6 +455,9 @@ class MemBlockImp(outer: MemBlock) extends LazyModuleImp(outer)
   // Sbuffer
   sbuffer.io.csrCtrl    <> csrCtrl
   sbuffer.io.dcache     <> dcache.io.lsu.store
+  // TODO: if dcache sbuffer resp needs to ne delayed
+  // sbuffer.io.dcache.pipe_resp.valid := RegNext(dcache.io.lsu.store.pipe_resp.valid)
+  // sbuffer.io.dcache.pipe_resp.bits := RegNext(dcache.io.lsu.store.pipe_resp.bits)
 
   // flush sbuffer
   val fenceFlush = io.fenceToSbuffer.flushSb
@@ -557,8 +567,21 @@ class MemBlockImp(outer: MemBlock) extends LazyModuleImp(outer)
     ("ldDeqCount", ldDeqCount),
     ("stDeqCount", stDeqCount),
   )
-  val allPerfEvents = memBlockPerfEvents ++ (loadUnits ++ Seq(sbuffer, lsq, dcache)).flatMap(_.getPerfEvents)
-  val hpmEvents = allPerfEvents.map(_._2.asTypeOf(new PerfEvent)) ++ io.perfEventsPTW
-  val perfEvents = HPerfMonitor(csrevents, hpmEvents).getPerfEvents
+
+  val perfFromUnits = (loadUnits ++ Seq(sbuffer, lsq, dcache)).flatMap(_.getPerfEvents)
+  val perfFromIO    = io.perfEventsPTW.map(x => ("perfEventsPTW", x.value))
+  val perfBlock     = Seq(("ldDeqCount", ldDeqCount),
+                          ("stDeqCount", stDeqCount))
+  // let index = 0 be no event
+  val allPerfEvents = Seq(("noEvent", 0.U)) ++ perfFromUnits ++ perfFromIO ++ perfBlock
+
+  if (printEventCoding) {
+    for (((name, inc), i) <- allPerfEvents.zipWithIndex) {
+      println("MemBlock perfEvents Set", name, inc, i)
+    }
+  }
+
+  val allPerfInc = allPerfEvents.map(_._2.asTypeOf(new PerfEvent))
+  val perfEvents = HPerfMonitor(csrevents, allPerfInc).getPerfEvents
   generatePerfEvent()
 }

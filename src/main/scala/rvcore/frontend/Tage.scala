@@ -308,7 +308,7 @@ class TageTable
 
 
   val table_banks = Seq.fill(nBanks)(
-    Module(new FoldedSRAMTemplate(new TageEntry, set=bankSize, width=bankFoldWidth, way=numBr, shouldReset=true, holdRead=true, singlePort=true)))
+    Module(new FoldedSRAMTemplate(new TageEntry, set=bankSize, width=bankFoldWidth, way=numBr, shouldReset=false, holdRead=true, singlePort=true)))
 
 
   val (s0_idx, s0_tag) = compute_tag_and_hash(req_unhashed_idx, io.req.bits.folded_hist)
@@ -559,11 +559,11 @@ class Tage(implicit p: Parameters) extends BaseTage {
   val s1_resps = VecInit(tables.map(_.io.resps))
 
   //val s1_bim = io.in.bits.resp_in(0).s1.full_pred
-  // val s2_bim = RegEnable(s1_bim, io.s1_fire)
+  // val s2_bim = RegEnable(s1_bim, enable=io.s1_fire)
 
   val debug_pc_s0 = s0_pc
-  val debug_pc_s1 = RegEnable(s0_pc, io.s0_fire)
-  val debug_pc_s2 = RegEnable(debug_pc_s1, io.s1_fire)
+  val debug_pc_s1 = RegEnable(s0_pc, enable=io.s0_fire)
+  val debug_pc_s2 = RegEnable(debug_pc_s1, enable=io.s1_fire)
 
   val s1_provideds        = Wire(Vec(numBr, Bool()))
   val s1_providers        = Wire(Vec(numBr, UInt(log2Ceil(TageNTables).W)))

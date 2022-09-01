@@ -15,8 +15,7 @@
 * See the Mulan PSL v2 for more details.
 ***************************************************************************************/
 
-// The "SRT4DividerDataModule" in this file is a scala rewrite of SRT4 divider by Yifei He, see
-// https://github.com/OpenRVCore/RVCORE-Verilog-Library/tree/main/int_div_radix_4_v1
+// The "SRT4DividerDataModule" in this file is a scala rewrite of SRT4 divider by Yifei He
 // Email of original author: hyf_sysu@qq.com
 
 package rvcore.backend.fu

@@ -77,8 +77,6 @@ class RobEnqIO(implicit p: Parameters) extends RVCOREBundle {
   val resp = Vec(RenameWidth, Output(new RobPtr))
 }
 
-class RobDispatchData(implicit p: Parameters) extends RobCommitInfo
-
 class RobDeqPtrWrapper(implicit p: Parameters) extends RVCOREModule with HasCircularQueuePtrHelper {
   val io = IO(new Bundle {
     // for commits/flush
@@ -304,7 +302,6 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
     val writeback = MixedVec(numWbPorts.map(num => Vec(num, Flipped(ValidIO(new ExuOutput)))))
     val commits = new RobCommitIO
     val lsq = new RobLsqIO
-    val bcommit = Output(UInt(log2Up(CommitWidth + 1).W))
     val robDeqPtr = Output(new RobPtr)
     val csr = new RobCSRIO
     val robFull = Output(Bool())
@@ -380,7 +377,7 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
     * (1) read: commits/walk/exception
     * (2) write: write back from exe units
     */
-  val dispatchData = Module(new SyncDataModuleTemplate(new RobDispatchData, RobSize, CommitWidth, RenameWidth))
+  val dispatchData = Module(new SyncDataModuleTemplate(new RobDispatchData, RobSize, CommitWidth, RenameWidth, "Rob", concatData = true))
   val dispatchDataRead = dispatchData.io.rdata
 
   val exceptionGen = Module(new ExceptionGen)
@@ -548,11 +545,14 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
 
   // extra space is used when rob has no enough space, but mispredict recovery needs such info to walk regmap
   require(RenameWidth <= CommitWidth)
-  val extraSpaceForMPR = Reg(Vec(RenameWidth, new RobDispatchData))
+  val extraSpaceForMPR = Reg(Vec(RenameWidth, new RobCommitInfo))
   val usedSpaceForMPR = Reg(Vec(RenameWidth, Bool()))
   when (io.enq.needAlloc.asUInt.orR && io.redirect.valid) {
     usedSpaceForMPR := io.enq.needAlloc
-    extraSpaceForMPR := dispatchData.io.wdata
+    extraSpaceForMPR.zip(dispatchData.io.wdata).map(d => d._1.connectDispatchData(d._2))
+    extraSpaceForMPR.zip(io.enq.req.map(_.bits)).foreach{ case (wdata, req) =>
+      wdata.pc := req.cf.pc
+    }
     RVCOREDebug("rob full, switched to s_extrawalk. needExtraSpaceForMPR: %b\n", io.enq.needAlloc.asUInt)
   }
 
@@ -563,17 +563,17 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
     (v & info.wflags, v & info.fpWen)
   }).unzip
   val fflags = Wire(Valid(UInt(5.W)))
-  fflags.valid := Mux(io.commits.isWalk, false.B, Cat(wflags).orR())
+  fflags.valid := Mux(io.commits.isWalk, false.B, Cat(wflags).orR)
   fflags.bits := wflags.zip(fflagsDataRead).map({
     case (w, f) => Mux(w, f, 0.U)
   }).reduce(_|_)
-  val dirty_fs = Mux(io.commits.isWalk, false.B, Cat(fpWen).orR())
+  val dirty_fs = Mux(io.commits.isWalk, false.B, Cat(fpWen).orR)
 
   // when mispredict branches writeback, stop commit in the next 2 cycles
   // TODO: don't check all exu write back
   val misPredWb = Cat(VecInit(exuWriteback.map(wb =>
     wb.bits.redirect.cfiUpdate.isMisPred && wb.bits.redirectValid
-  ))).orR()
+  ))).orR
   val misPredBlockCounter = Reg(UInt(3.W))
   misPredBlockCounter := Mux(misPredWb,
     "b111".U,
@@ -594,12 +594,16 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
     // when intrBitSetReg, allow only one instruction to commit at each clock cycle
     val isBlocked = if (i != 0) Cat(commit_block.take(i)).orR || allowOnlyOneCommit else intrEnable || deqHasException || deqHasReplayInst
     io.commits.valid(i) := commit_v(i) && commit_w(i) && !isBlocked && !misPredBlock && !isReplaying && !lastCycleFlush && !hasWFI
-    io.commits.info(i)  := dispatchDataRead(i)
+    io.commits.info(i).connectDispatchData(dispatchDataRead(i))
+    io.commits.info(i).pc := debug_microOp(deqPtrVec(i).value).cf.pc
+    io.commits.walkValid(i) := DontCare
 
     when (state === s_walk) {
       io.commits.valid(i) := commit_v(i) && shouldWalkVec(i)
+      io.commits.walkValid(i) := commit_v(i) && shouldWalkVec(i)
     }.elsewhen(state === s_extrawalk) {
       io.commits.valid(i) := (if (i < RenameWidth) usedSpaceForMPR(RenameWidth-i-1) else false.B)
+      io.commits.walkValid(i) := (if (i < RenameWidth) usedSpaceForMPR(RenameWidth-i-1) else false.B)
       io.commits.info(i)  := (if (i < RenameWidth) extraSpaceForMPR(RenameWidth-i-1) else DontCare)
     }
 
@@ -631,10 +635,6 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
   // sync fflags/dirty_fs to csr
   io.csr.fflags := RegNext(fflags)
   io.csr.dirty_fs := RegNext(dirty_fs)
-
-  // commit branch to brq
-  val cfiCommitVec = VecInit(io.commits.valid.zip(io.commits.info.map(_.commitType)).map{case(v, t) => v && CommitType.isBranch(t)})
-  io.bcommit := Mux(io.commits.isWalk, 0.U, PopCount(cfiCommitVec))
 
   // commit load/store to lsq
   val ldCommitVec = VecInit((0 until CommitWidth).map(i => io.commits.valid(i) && io.commits.info(i).commitType === CommitType.LOAD))
@@ -839,7 +839,6 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
     wdata.old_pdest := req.old_pdest
     wdata.ftqIdx := req.cf.ftqPtr
     wdata.ftqOffset := req.cf.ftqOffset
-    wdata.pc := req.cf.pc
   }
   dispatchData.io.raddr := commitReadAddr_next
 
@@ -851,7 +850,7 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
     exceptionGen.io.enq(i).bits.exceptionVec := ExceptionNO.selectFrontend(io.enq.req(i).bits.cf.exceptionVec)
     exceptionGen.io.enq(i).bits.flushPipe := io.enq.req(i).bits.ctrl.flushPipe
     exceptionGen.io.enq(i).bits.replayInst := false.B
-    assert(io.enq.req(i).bits.ctrl.replayInst === false.B)
+    RVCOREError(canEnqueue(i) && io.enq.req(i).bits.ctrl.replayInst, "enq should not set replayInst")
     exceptionGen.io.enq(i).bits.singleStep := io.enq.req(i).bits.ctrl.singleStep
     exceptionGen.io.enq(i).bits.crossPageIPFFix := io.enq.req(i).bits.cf.crossPageIPFFix
     exceptionGen.io.enq(i).bits.trigger.clear()
@@ -879,7 +878,7 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
 
   val fflags_wb = fflagsPorts.map(_._2)
   val fflagsDataModule = Module(new SyncDataModuleTemplate(
-    UInt(5.W), RobSize, CommitWidth, fflags_wb.size)
+    UInt(5.W), RobSize, CommitWidth, fflags_wb.size, "fflags")
   )
   for(i <- fflags_wb.indices){
     fflagsDataModule.io.wen  (i) := fflags_wb(i).valid
@@ -942,7 +941,7 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
   val commitIsStore = io.commits.info.map(_.commitType).map(_ === CommitType.STORE)
   RVCOREPerfAccumulate("commitInstrStore", ifCommit(PopCount(io.commits.valid.zip(commitIsStore).map{ case (v, t) => v && t })))
   RVCOREPerfAccumulate("writeback", PopCount((0 until RobSize).map(i => valid(i) && writebacked(i))))
-  // RVCOREPerfAccumulate("enqInstr", PopCount(io.dp1Req.map(_.fire())))
+  // RVCOREPerfAccumulate("enqInstr", PopCount(io.dp1Req.map(_.fire)))
   // RVCOREPerfAccumulate("d2rVnR", PopCount(io.dp1Req.map(p => p.valid && !p.ready)))
   RVCOREPerfAccumulate("walkInstr", Mux(io.commits.isWalk, PopCount(io.commits.valid), 0.U))
   RVCOREPerfAccumulate("walkCycle", state === s_walk || state === s_extrawalk)
@@ -974,7 +973,7 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
     RVCOREPerfAccumulate(s"${fuName}_latency_execute", ifCommit(latencySum(commitIsFuType, executeLatency)))
     RVCOREPerfAccumulate(s"${fuName}_latency_enq_rs_execute", ifCommit(latencySum(commitIsFuType, rsFuLatency)))
     RVCOREPerfAccumulate(s"${fuName}_latency_commit", ifCommit(latencySum(commitIsFuType, commitLatency)))
-    if (fuType == FuType.fmac.litValue()) {
+    if (fuType == FuType.fmac.litValue) {
       val commitIsFma = commitIsFuType.zip(commitDebugUop).map(x => x._1 && x._2.ctrl.fpu.ren3 )
       RVCOREPerfAccumulate(s"${fuName}_instr_cnt_fma", ifCommit(PopCount(commitIsFma)))
       RVCOREPerfAccumulate(s"${fuName}_latency_enq_rs_execute_fma", ifCommit(latencySum(commitIsFma, rsFuLatency)))
@@ -1021,15 +1020,15 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
       difftest.io.wpdest   := RegNext(RegNext(RegNext(io.commits.info(i).pdest)))
       difftest.io.wdest    := RegNext(RegNext(RegNext(io.commits.info(i).ldest)))
 
-      // // runahead commit hint
-      // val runahead_commit = Module(new DifftestRunaheadCommitEvent)
-      // runahead_commit.io.clock := clock
-      // runahead_commit.io.coreid := io.hartId
-      // runahead_commit.io.index := i.U
-      // runahead_commit.io.valid := difftest.io.valid &&
-      //   (commitBranchValid(i) || commitIsStore(i))
-      // // TODO: is branch or store
-      // runahead_commit.io.pc    := difftest.io.pc
+      // runahead commit hint
+      val runahead_commit = Module(new DifftestRunaheadCommitEvent)
+      runahead_commit.io.clock := clock
+      runahead_commit.io.coreid := io.hartId
+      runahead_commit.io.index := i.U
+      runahead_commit.io.valid := difftest.io.valid &&
+        (commitBranchValid(i) || commitIsStore(i))
+      // TODO: is branch or store
+      runahead_commit.io.pc    := difftest.io.pc
     }
   }
   else if (env.AlwaysBasicDiff) {
@@ -1065,8 +1064,8 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
       difftest.io.special := RegNext(RegNext(RegNext(CommitType.isFused(commitInfo.commitType))))
       difftest.io.skip    := RegNext(RegNext(RegNext(Mux(eliminatedMove, false.B, exuOut.isMMIO || exuOut.isPerfCnt))))
       difftest.io.isRVC   := RegNext(RegNext(RegNext(isRVC)))
-      difftest.io.rfwen   := RegNext(RegNext(RegNext(io.commits.valid(i) && commitInfo.rfWen && commitInfo.ldest =/= 0.U)))
-      difftest.io.fpwen   := RegNext(RegNext(RegNext(io.commits.valid(i) && commitInfo.fpWen)))
+      difftest.io.rfwen     := RegNext(RegNext(RegNext(io.commits.valid(i) && commitInfo.rfWen && commitInfo.ldest =/= 0.U)))
+      difftest.io.fpwen     := RegNext(RegNext(RegNext(io.commits.valid(i) && commitInfo.fpWen)))
       difftest.io.wpdest  := RegNext(RegNext(RegNext(commitInfo.pdest)))
       difftest.io.wdest   := RegNext(RegNext(RegNext(commitInfo.ldest)))
     }

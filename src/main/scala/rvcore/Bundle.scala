@@ -121,10 +121,10 @@ class CtrlFlow(implicit p: Parameters) extends RVCOREBundle {
   val waitForRobIdx = new RobPtr // store set predicted previous store robIdx
   // Load wait is needed
   // load inst will not be executed until former store (predicted by mdp) addr calcuated
-  val loadWaitBit = Bool() 
-  // If (loadWaitBit && loadWaitStrict), strict load wait is needed 
+  val loadWaitBit = Bool()
+  // If (loadWaitBit && loadWaitStrict), strict load wait is needed
   // load inst will not be executed until ALL former store addr calcuated
-  val loadWaitStrict = Bool() 
+  val loadWaitStrict = Bool()
   val ssid = UInt(SSIDWidth.W)
   val ftqPtr = new FtqPtr
   val ftqOffset = UInt(log2Up(PredictWidth).W)
@@ -164,7 +164,6 @@ class CtrlSignals(implicit p: Parameters) extends RVCOREBundle {
   val noSpecExec = Bool() // wait forward
   val blockBackward = Bool() // block backward
   val flushPipe = Bool() // This inst will flush all the pipe when commit, like exception but can commit
-  val isRVF = Bool()
   val selImm = SelImm()
   val imm = UInt(ImmUnion.maxLen.W)
   val commitType = CommitType()
@@ -176,7 +175,7 @@ class CtrlSignals(implicit p: Parameters) extends RVCOREBundle {
   val replayInst = Bool()
 
   private def allSignals = srcType ++ Seq(fuType, fuOpType, rfWen, fpWen,
-    isRVCORETrap, noSpecExec, blockBackward, flushPipe, isRVF, selImm)
+    isRVCORETrap, noSpecExec, blockBackward, flushPipe, selImm)
 
   def decode(inst: UInt, table: Iterable[(BitPat, List[BitPat])]): CtrlSignals = {
     val decoder = freechips.rocketchip.rocket.DecodeLogic(inst, XDecode.decodeDefault, table)
@@ -249,6 +248,8 @@ class MicroOp(implicit p: Parameters) extends CfCtrl {
     if (!replayInst) { ctrl.replayInst := false.B }
     this
   }
+  // Assume only the LUI instruction is decoded with IMM_U in ALU.
+  def isLUI: Bool = ctrl.selImm === SelImm.IMM_U && ctrl.fuType === FuType.alu
 }
 
 class RVCOREBundleWithMicroOp(implicit p: Parameters) extends RVCOREBundle {
@@ -330,7 +331,7 @@ class ExceptionInfo(implicit p: Parameters) extends RVCOREBundleWithMicroOp {
   val isInterrupt = Bool()
 }
 
-class RobCommitInfo(implicit p: Parameters) extends RVCOREBundle {
+class RobDispatchData(implicit p: Parameters) extends RVCOREBundle {
   val ldest = UInt(5.W)
   val rfWen = Bool()
   val fpWen = Bool()
@@ -340,14 +341,30 @@ class RobCommitInfo(implicit p: Parameters) extends RVCOREBundle {
   val old_pdest = UInt(PhyRegIdxWidth.W)
   val ftqIdx = new FtqPtr
   val ftqOffset = UInt(log2Up(PredictWidth).W)
+}
 
+class RobCommitInfo(implicit p: Parameters) extends RobDispatchData {
   // these should be optimized for synthesis verilog
   val pc = UInt(VAddrBits.W)
+
+  def connectDispatchData(data: RobDispatchData) {
+    ldest := data.ldest
+    rfWen := data.rfWen
+    fpWen := data.fpWen
+    wflags := data.wflags
+    commitType := data.commitType
+    pdest := data.pdest
+    old_pdest := data.old_pdest
+    ftqIdx := data.ftqIdx
+    ftqOffset := data.ftqOffset
+  }
 }
 
 class RobCommitIO(implicit p: Parameters) extends RVCOREBundle {
   val isWalk = Output(Bool())
   val valid = Vec(CommitWidth, Output(Bool()))
+  // valid bits optimized for walk
+  val walkValid = Vec(CommitWidth, Output(Bool()))
   val info = Vec(CommitWidth, Output(new RobCommitInfo))
 
   def hasWalkInstr = isWalk && valid.asUInt.orR
@@ -479,7 +496,7 @@ class CustomCSRCtrlIO(implicit p: Parameters) extends RVCOREBundle {
 }
 
 class DistributedCSRIO(implicit p: Parameters) extends RVCOREBundle {
-  // CSR has been written by csr inst, copies of csr should be updated
+  // CSR has been writen by csr inst, copies of csr should be updated
   val w = ValidIO(new Bundle {
     val addr = Output(UInt(12.W))
     val data = Output(UInt(XLEN.W))

@@ -41,8 +41,6 @@ class FrontendImp (outer: Frontend) extends LazyModuleImp(outer)
   with HasPerfEvents
 {
   val io = IO(new Bundle() {
-    val hartId = Input(UInt(8.W))
-    val reset_vector = Input(UInt(PAddrBits.W))
     val fencei = Input(Bool())
     val ptw = new TlbPtwIO(6)
     val backend = new FrontendToCtrlIO
@@ -70,6 +68,7 @@ class FrontendImp (outer: Frontend) extends LazyModuleImp(outer)
 
   val tlbCsr = DelayN(io.tlbCsr, 2)
   val csrCtrl = DelayN(io.csrCtrl, 2)
+  val sfence = RegNext(RegNext(io.sfence))
 
   // trigger
   ifu.io.frontendTrigger := csrCtrl.frontend_trigger
@@ -78,7 +77,6 @@ class FrontendImp (outer: Frontend) extends LazyModuleImp(outer)
 
   // bpu ctrl
   bpu.io.ctrl := csrCtrl.bp_ctrl
-  bpu.io.reset_vector := io.reset_vector
 
 // pmp
   val pmp = Module(new PMP())
@@ -118,7 +116,7 @@ class FrontendImp (outer: Frontend) extends LazyModuleImp(outer)
   io.ptw <> TLB(
     //in = Seq(icache.io.itlb(0), icache.io.itlb(1)),
     in = Seq(itlb_requestors(0),itlb_requestors(1),itlb_requestors(2),itlb_requestors(3),itlb_requestors(4),itlb_requestors(5)),
-    sfence = io.sfence,
+    sfence = sfence,
     csr = tlbCsr,
     width = 6,
     shouldBlock = true,
@@ -167,8 +165,6 @@ class FrontendImp (outer: Frontend) extends LazyModuleImp(outer)
   instrUncache.io.flush := false.B
   io.error <> RegNext(RegNext(icache.io.error))
 
-  icache.io.hartId := io.hartId
-
   val frontendBubble = PopCount((0 until DecodeWidth).map(i => io.backend.cfVec(i).ready && !ibuffer.io.out(i).valid))
   RVCOREPerfAccumulate("FrontendBubble", frontendBubble)
   io.frontendInfo.ibufFull := RegNext(ibuffer.io.full)
@@ -178,7 +174,19 @@ class FrontendImp (outer: Frontend) extends LazyModuleImp(outer)
   pfevent.io.distribute_csr := io.csrCtrl.distribute_csr
   val csrevents = pfevent.io.hpmevent.take(8)
 
-  val allPerfEvents = Seq(ifu, ibuffer, icache, ftq, bpu).flatMap(_.getPerf)
-  override val perfEvents = HPerfMonitor(csrevents, allPerfEvents).getPerfEvents
+  val perfFromUnits = Seq(ifu, ibuffer, icache, ftq, bpu).flatMap(_.getPerfEvents)
+  val perfFromIO    = Seq()
+  val perfBlock     = Seq()
+  // let index = 0 be no event
+  val allPerfEvents = Seq(("noEvent", 0.U)) ++ perfFromUnits ++ perfFromIO ++ perfBlock
+
+  if (printEventCoding) {
+    for (((name, inc), i) <- allPerfEvents.zipWithIndex) {
+      println("Frontend perfEvents Set", name, inc, i)
+    }
+  }
+
+  val allPerfInc = allPerfEvents.map(_._2.asTypeOf(new PerfEvent))
+  override val perfEvents = HPerfMonitor(csrevents, allPerfInc).getPerfEvents
   generatePerfEvent()
 }

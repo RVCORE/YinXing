@@ -15,8 +15,7 @@
 * See the Mulan PSL v2 for more details.
 ***************************************************************************************/
 
-// This file contains components originally written by Yifei He, see
-// https://github.com/OpenRVCore/RVCORE-Verilog-Library/tree/main/int_div_radix_4_v1
+// This file contains components originally written by Yifei He
 // Email of original author: hyf_sysu@qq.com
 
 package rvcore.backend.fu
@@ -147,10 +146,11 @@ class SRT16DividerDataModule(len: Int) extends Module {
   val aIsZero = RegEnable(aLZC(lzc_width), state(s_pre_0))
   val aTooSmall = RegEnable(aLZC(lzc_width) | lzcWireDiff(lzc_width), state(s_pre_0))
   special := dIsOne | dIsZero | aTooSmall
+  val aRegNeg = RegEnable(-aReg, state(s_pre_0))
 
   val quotSpecial = Mux(dIsZero, VecInit(Seq.fill(len)(true.B)).asUInt,
                             Mux(aTooSmall, 0.U,
-                              Mux(dSignReg, -aReg, aReg) //  signed 2^(len-1)
+                              Mux(dSignReg, aRegNeg, aReg) //  signed 2^(len-1)
                             ))
   val remSpecial = Mux(dIsZero || aTooSmall, aReg, 0.U)
   val quotSpecialReg = RegEnable(quotSpecial, state(s_pre_1))

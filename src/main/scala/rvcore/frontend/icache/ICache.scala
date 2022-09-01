@@ -148,10 +148,10 @@ class ICacheMetaArray()(implicit p: Parameters) extends ICacheArray
   val port_1_read_1  = io.read.valid &&  io.read.bits.vSetIdx(1)(0) && io.read.bits.isDoubleLine
   val port_1_read_0  = io.read.valid && !io.read.bits.vSetIdx(1)(0) && io.read.bits.isDoubleLine
 
-  val port_0_read_0_reg = RegEnable(port_0_read_0, io.read.fire())
-  val port_0_read_1_reg = RegEnable(port_0_read_1, io.read.fire())
-  val port_1_read_1_reg = RegEnable(port_1_read_1, io.read.fire())
-  val port_1_read_0_reg = RegEnable(port_1_read_0, io.read.fire())
+  val port_0_read_0_reg = RegEnable(next = port_0_read_0, enable = io.read.fire())
+  val port_0_read_1_reg = RegEnable(next = port_0_read_1, enable = io.read.fire())
+  val port_1_read_1_reg = RegEnable(next = port_1_read_1, enable = io.read.fire())
+  val port_1_read_0_reg = RegEnable(next = port_1_read_0, enable = io.read.fire())
 
   val bank_0_idx = Mux(port_0_read_0, io.read.bits.vSetIdx(0), io.read.bits.vSetIdx(1))
   val bank_1_idx = Mux(port_0_read_1, io.read.bits.vSetIdx(0), io.read.bits.vSetIdx(1))
@@ -303,8 +303,8 @@ class ICacheDataArray(implicit p: Parameters) extends ICacheArray
   val port_1_read_1  = io.read.valid &&  io.read.bits.vSetIdx(1)(0) && io.read.bits.isDoubleLine
   val port_1_read_0  = io.read.valid && !io.read.bits.vSetIdx(1)(0) && io.read.bits.isDoubleLine
 
-  val port_0_read_1_reg = RegEnable(port_0_read_1, io.read.fire())
-  val port_1_read_0_reg = RegEnable(port_1_read_0, io.read.fire())
+  val port_0_read_1_reg = RegEnable(next = port_0_read_1, enable = io.read.fire())
+  val port_1_read_0_reg = RegEnable(next = port_1_read_0, enable = io.read.fire())
 
   val bank_0_idx = Mux(port_0_read_0, io.read.bits.vSetIdx(0), io.read.bits.vSetIdx(1))
   val bank_1_idx = Mux(port_0_read_1, io.read.bits.vSetIdx(0), io.read.bits.vSetIdx(1))
@@ -440,7 +440,6 @@ class ICacheDataArray(implicit p: Parameters) extends ICacheArray
 
 class ICacheIO(implicit p: Parameters) extends ICacheBundle
 {
-  val hartId = Input(UInt(8.W))
   val prefetch    = Flipped(new FtqPrefechBundle)
   val stop        = Input(Bool())
   val fetch       = Vec(PortNumber, new ICacheMainPipeBundle)
@@ -574,7 +573,7 @@ class ICacheImp(outer: ICache) extends LazyModuleImp(outer) with HasICacheParame
   }
 
   missUnit.io.prefetch_req <> prefetchPipe.io.toMissUnit.enqReq
-  missUnit.io.hartId       := io.hartId
+
   prefetchPipe.io.fromMSHR <> missUnit.io.prefetch_check
 
   bus.b.ready := false.B
@@ -667,7 +666,7 @@ class ICacheImp(outer: ICache) extends LazyModuleImp(outer) with HasICacheParame
 
   val perfEvents = Seq(
     ("icache_miss_cnt  ", false.B),
-    ("icache_miss_penty", BoolStopWatch(start = false.B, stop = false.B || false.B, startHighPriority = true)),
+    ("icache_miss_penalty", BoolStopWatch(start = false.B, stop = false.B || false.B, startHighPriority = true)),
   )
   generatePerfEvent()
 

@@ -615,12 +615,20 @@ class CSR(implicit p: Parameters) extends FunctionUnit with HasCSRConst with PMP
                    List.fill(8)(RegInit("h8020080200".U(XLEN.W))) ++
                    List.fill(5)(RegInit("hc0300c0300".U(XLEN.W)))
   for (i <-0 until nrPerfCnts) {
-    perfEventscounten(i) := (Cat(perfEvents(i)(62),perfEvents(i)(61),(perfEvents(i)(61,60))) & priviledgeModeOH).orR
+    perfEventscounten(i) := (perfEvents(i)(63,60) & priviledgeModeOH).orR
   }
 
   val hpmEvents = Wire(Vec(numPCntHc * coreParams.L2NBanks, new PerfEvent))
   for (i <- 0 until numPCntHc * coreParams.L2NBanks) {
     hpmEvents(i) := csrio.perf.perfEventsHc(i)
+  }
+
+  // print perfEvents
+  val allPerfEvents = hpmEvents.map(x => (s"Hc", x.value))
+  if (printEventCoding) {
+    for (((name, inc), i) <- allPerfEvents.zipWithIndex) {
+      println("CSR perfEvents Set", name, inc, i)
+    }
   }
 
   val csrevents = perfEvents.slice(24, 29)
@@ -770,7 +778,7 @@ class CSR(implicit p: Parameters) extends FunctionUnit with HasCSRConst with PMP
   ))
 
   val addrInPerfCnt = (addr >= Mcycle.U) && (addr <= Mhpmcounter31.U) ||
-    (addr >= Mcountinhibit.U) && (addr <= Mhpmevent31.U) ||
+    (addr >= Mcountinhibit.U) && (addr <= Mhpmevent31.U) || 
     addr === Mip.U
   csrio.isPerfCnt := addrInPerfCnt && valid && func =/= CSROpType.jmp
 
@@ -1140,7 +1148,7 @@ class CSR(implicit p: Parameters) extends FunctionUnit with HasCSRConst with PMP
     debugMode := debugModeNew
   }
 
-  RVCOREDebug(raiseExceptionIntr && delegS, "sepc is written!!! pc:%x\n", cfIn.pc)
+  RVCOREDebug(raiseExceptionIntr && delegS, "sepc is writen!!! pc:%x\n", cfIn.pc)
 
   // Distributed CSR update req
   //

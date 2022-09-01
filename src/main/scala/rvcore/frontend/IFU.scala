@@ -122,7 +122,7 @@ class NewIFU(implicit p: Parameters) extends RVCOREModule
   val predChecker     = Module(new PredChecker)
   val frontendTrigger = Module(new FrontendTrigger)
   val (preDecoderIn, preDecoderOut)   = (preDecoder.io.in, preDecoder.io.out)
-  val (checkerIn, checkerOut)         = (predChecker.io.in, predChecker.io.out)
+  val (checkerIn, checkerOutStage1, checkerOutStage2)         = (predChecker.io.in, predChecker.io.out.stage1Out,predChecker.io.out.stage2Out)
 
   io.iTLBInter.resp.ready := true.B
 
@@ -249,11 +249,11 @@ class NewIFU(implicit p: Parameters) extends RVCOREModule
   val f2_mmio         = fromICache(0).bits.tlbExcp.mmio && !fromICache(0).bits.tlbExcp.accessFault &&
                                                            !fromICache(0).bits.tlbExcp.pageFault
 
-  val f2_pc               = RegEnable(f1_pc,  f1_fire)
-  val f2_half_snpc        = RegEnable(f1_half_snpc,  f1_fire)
-  val f2_cut_ptr          = RegEnable(f1_cut_ptr,  f1_fire)
+  val f2_pc               = RegEnable(next = f1_pc, enable = f1_fire)
+  val f2_half_snpc        = RegEnable(next = f1_half_snpc, enable = f1_fire)
+  val f2_cut_ptr          = RegEnable(next = f1_cut_ptr, enable = f1_fire)
 
-  val f2_resend_vaddr     = RegEnable(f1_ftq_req.startAddr + 2.U,  f1_fire)
+  val f2_resend_vaddr     = RegEnable(next = f1_ftq_req.startAddr + 2.U, enable = f1_fire)
 
   def isNextLine(pc: UInt, startAddr: UInt) = {
     startAddr(blockOffBits) ^ pc(blockOffBits)
@@ -274,21 +274,23 @@ class NewIFU(implicit p: Parameters) extends RVCOREModule
   val f2_perf_info    = io.icachePerfInfo
 
   def cut(cacheline: UInt, cutPtr: Vec[UInt]) : Vec[UInt] ={
-    if(HasCExtension){
+    require(HasCExtension)
+    // if(HasCExtension){
+      val partCacheline = cacheline((blockBytes * 8 * 2 * 3) / 4 - 1, 0)
       val result   = Wire(Vec(PredictWidth + 1, UInt(16.W)))
-      val dataVec  = cacheline.asTypeOf(Vec(blockBytes * 2/ 2, UInt(16.W)))
+      val dataVec  = cacheline.asTypeOf(Vec(blockBytes * 3 /4, UInt(16.W))) //47 16-bit data vector
       (0 until PredictWidth + 1).foreach( i =>
-        result(i) := dataVec(cutPtr(i))
+        result(i) := dataVec(cutPtr(i)) //the max ptr is 3*blockBytes/4-1
       )
       result
-    } else {
-      val result   = Wire(Vec(PredictWidth, UInt(32.W)) )
-      val dataVec  = cacheline.asTypeOf(Vec(blockBytes * 2/ 4, UInt(32.W)))
-      (0 until PredictWidth).foreach( i =>
-        result(i) := dataVec(cutPtr(i))
-      )
-      result
-    }
+    // } else {
+    //   val result   = Wire(Vec(PredictWidth, UInt(32.W)) )
+    //   val dataVec  = cacheline.asTypeOf(Vec(blockBytes * 2/ 4, UInt(32.W)))
+    //   (0 until PredictWidth).foreach( i =>
+    //     result(i) := dataVec(cutPtr(i))
+    //   )
+    //   result
+    // }
   }
 
   val f2_datas        = VecInit((0 until PortNumber).map(i => f2_cache_response_data(i)))
@@ -326,38 +328,38 @@ class NewIFU(implicit p: Parameters) extends RVCOREModule
     */
 
   val f3_valid          = RegInit(false.B)
-  val f3_ftq_req        = RegEnable(f2_ftq_req,    f2_fire)
-  // val f3_situation      = RegEnable(f2_situation,  f2_fire)
-  val f3_doubleLine     = RegEnable(f2_doubleLine, f2_fire)
+  val f3_ftq_req        = RegEnable(next = f2_ftq_req,    enable=f2_fire)
+  // val f3_situation      = RegEnable(next = f2_situation,  enable=f2_fire)
+  val f3_doubleLine     = RegEnable(next = f2_doubleLine, enable=f2_fire)
   val f3_fire           = io.toIbuffer.fire()
 
   f3_ready := f3_fire || !f3_valid
 
-  val f3_cut_data       = RegEnable(f2_cut_data, f2_fire)
+  val f3_cut_data       = RegEnable(next = f2_cut_data, enable=f2_fire)
 
-  val f3_except_pf      = RegEnable(f2_except_pf,  f2_fire)
-  val f3_except_af      = RegEnable(f2_except_af,  f2_fire)
-  val f3_mmio           = RegEnable(f2_mmio   ,  f2_fire)
+  val f3_except_pf      = RegEnable(next = f2_except_pf, enable = f2_fire)
+  val f3_except_af      = RegEnable(next = f2_except_af, enable = f2_fire)
+  val f3_mmio           = RegEnable(next = f2_mmio   , enable = f2_fire)
 
-  val f3_expd_instr     = RegEnable(f2_expd_instr,   f2_fire)
-  val f3_pd             = RegEnable(f2_pd,           f2_fire)
-  val f3_jump_offset    = RegEnable(f2_jump_offset,  f2_fire)
-  val f3_af_vec         = RegEnable(f2_af_vec,       f2_fire)
-  val f3_pf_vec         = RegEnable(f2_pf_vec ,      f2_fire)
-  val f3_pc             = RegEnable(f2_pc,           f2_fire)
-  val f3_half_snpc        = RegEnable(f2_half_snpc,  f2_fire)
-  val f3_instr_range    = RegEnable(f2_instr_range,  f2_fire)
-  val f3_foldpc         = RegEnable(f2_foldpc,       f2_fire)
-  val f3_crossPageFault = RegEnable(f2_crossPageFault,       f2_fire)
-  val f3_hasHalfValid   = RegEnable(f2_hasHalfValid,       f2_fire)
+  val f3_expd_instr     = RegEnable(next = f2_expd_instr,  enable = f2_fire)
+  val f3_pd             = RegEnable(next = f2_pd,          enable = f2_fire)
+  val f3_jump_offset    = RegEnable(next = f2_jump_offset, enable = f2_fire)
+  val f3_af_vec         = RegEnable(next = f2_af_vec,      enable = f2_fire)
+  val f3_pf_vec         = RegEnable(next = f2_pf_vec ,     enable = f2_fire)
+  val f3_pc             = RegEnable(next = f2_pc,          enable = f2_fire)
+  val f3_half_snpc        = RegEnable(next = f2_half_snpc, enable = f2_fire)
+  val f3_instr_range    = RegEnable(next = f2_instr_range, enable = f2_fire)
+  val f3_foldpc         = RegEnable(next = f2_foldpc,      enable = f2_fire)
+  val f3_crossPageFault = RegEnable(next = f2_crossPageFault,      enable = f2_fire)
+  val f3_hasHalfValid   = RegEnable(next = f2_hasHalfValid,      enable = f2_fire)
   val f3_except         = VecInit((0 until 2).map{i => f3_except_pf(i) || f3_except_af(i)})
   val f3_has_except     = f3_valid && (f3_except_af.reduce(_||_) || f3_except_pf.reduce(_||_))
-  val f3_pAddrs   = RegEnable(f2_paddrs,  f2_fire)
-  val f3_resend_vaddr   = RegEnable(f2_resend_vaddr,       f2_fire)
+  val f3_pAddrs   = RegEnable(next = f2_paddrs, enable = f2_fire)
+  val f3_resend_vaddr   = RegEnable(next = f2_resend_vaddr,      enable = f2_fire)
 
-//  when(f3_valid && !f3_ftq_req.ftqOffset.valid){
-//    assert(f3_ftq_req.startAddr + 32.U >= f3_ftq_req.nextStartAddr , "More tha 32 Bytes fetch is not allowed!")
-//  }
+  //when(f3_valid && !f3_ftq_req.ftqOffset.valid){
+  //  assert(f3_ftq_req.startAddr + 32.U >= f3_ftq_req.nextStartAddr , "More tha 32 Bytes fetch is not allowed!")
+  //}
 
   /*** MMIO State Machine***/
   val f3_mmio_data    = Reg(Vec(2, UInt(16.W)))
@@ -516,10 +518,11 @@ class NewIFU(implicit p: Parameters) extends RVCOREModule
   /*** handle half RVI in the last 2 Bytes  ***/
 
   def hasLastHalf(idx: UInt) = {
-    !f3_pd(idx).isRVC && checkerOut.fixedRange(idx) && f3_instr_valid(idx) && !checkerOut.fixedTaken(idx) && !checkerOut.fixedMissPred(idx) && ! f3_req_is_mmio
+    //!f3_pd(idx).isRVC && checkerOutStage1.fixedRange(idx) && f3_instr_valid(idx) && !checkerOutStage1.fixedTaken(idx) && !checkerOutStage2.fixedMissPred(idx) && ! f3_req_is_mmio
+    !f3_pd(idx).isRVC && checkerOutStage1.fixedRange(idx) && f3_instr_valid(idx) && !checkerOutStage1.fixedTaken(idx) && ! f3_req_is_mmio
   }
 
-  val f3_last_validIdx             = ~ParallelPriorityEncoder(checkerOut.fixedRange.reverse)
+  val f3_last_validIdx             = ~ParallelPriorityEncoder(checkerOutStage1.fixedRange.reverse)
 
   val f3_hasLastHalf         = hasLastHalf((PredictWidth - 1).U)
   val f3_false_lastHalf      = hasLastHalf(f3_last_validIdx)
@@ -551,20 +554,19 @@ class NewIFU(implicit p: Parameters) extends RVCOREModule
   io.toIbuffer.valid            := f3_valid && (!f3_req_is_mmio || f3_mmio_can_go) && !f3_flush
   io.toIbuffer.bits.instrs      := f3_expd_instr
   io.toIbuffer.bits.valid       := f3_instr_valid.asUInt
-  io.toIbuffer.bits.enqEnable   := checkerOut.fixedRange.asUInt & f3_instr_valid.asUInt
+  io.toIbuffer.bits.enqEnable   := checkerOutStage1.fixedRange.asUInt & f3_instr_valid.asUInt
   io.toIbuffer.bits.pd          := f3_pd
   io.toIbuffer.bits.ftqPtr      := f3_ftq_req.ftqIdx
   io.toIbuffer.bits.pc          := f3_pc
-  io.toIbuffer.bits.ftqOffset.zipWithIndex.map{case(a, i) => a.bits := i.U; a.valid := checkerOut.fixedTaken(i) && !f3_req_is_mmio}
+  io.toIbuffer.bits.ftqOffset.zipWithIndex.map{case(a, i) => a.bits := i.U; a.valid := checkerOutStage1.fixedTaken(i) && !f3_req_is_mmio}
   io.toIbuffer.bits.foldpc      := f3_foldpc
   io.toIbuffer.bits.ipf         := VecInit(f3_pf_vec.zip(f3_crossPageFault).map{case (pf, crossPF) => pf || crossPF})
   io.toIbuffer.bits.acf         := f3_af_vec
   io.toIbuffer.bits.crossPageIPFFix := f3_crossPageFault
   io.toIbuffer.bits.triggered   := f3_triggered
 
-  val lastHalfMask = VecInit((0 until PredictWidth).map(i => if(i ==0) false.B else true.B))
   when(f3_lastHalf.valid){
-    io.toIbuffer.bits.enqEnable := checkerOut.fixedRange.asUInt & f3_instr_valid.asUInt & lastHalfMask.asUInt
+    io.toIbuffer.bits.enqEnable := checkerOutStage1.fixedRange.asUInt & f3_instr_valid.asUInt & f3_lastHalf_mask
     io.toIbuffer.bits.valid     := f3_lastHalf_mask & f3_instr_valid.asUInt
   }
 
@@ -631,7 +633,8 @@ class NewIFU(implicit p: Parameters) extends RVCOREModule
   val wb_valid          = RegNext(RegNext(f2_fire && !f2_flush) && !f3_req_is_mmio && !f3_flush)
   val wb_ftq_req        = RegNext(f3_ftq_req)
 
-  val wb_check_result   = RegNext(checkerOut)
+  val wb_check_result_stage1   = RegNext(checkerOutStage1)
+  val wb_check_result_stage2   = checkerOutStage2
   val wb_instr_range    = RegNext(io.toIbuffer.bits.enqEnable)
   val wb_pc             = RegNext(f3_pc)
   val wb_pd             = RegNext(f3_pd)
@@ -648,7 +651,7 @@ class NewIFU(implicit p: Parameters) extends RVCOREModule
   /* false oversize */
   val lastIsRVC = wb_instr_range.asTypeOf(Vec(PredictWidth,Bool())).last  && wb_pd.last.isRVC
   val lastIsRVI = wb_instr_range.asTypeOf(Vec(PredictWidth,Bool()))(PredictWidth - 2) && !wb_pd(PredictWidth - 2).isRVC
-  val lastTaken = wb_check_result.fixedTaken.last
+  val lastTaken = wb_check_result_stage1.fixedTaken.last
 
   f3_wb_not_flush := wb_ftq_req.ftqIdx === f3_ftq_req.ftqIdx && f3_valid && wb_valid
 
@@ -659,12 +662,12 @@ class NewIFU(implicit p: Parameters) extends RVCOREModule
   checkFlushWb.bits.pd.zipWithIndex.map{case(instr,i) => instr.valid := wb_instr_valid(i)}
   checkFlushWb.bits.ftqIdx            := wb_ftq_req.ftqIdx
   checkFlushWb.bits.ftqOffset         := wb_ftq_req.ftqOffset.bits
-  checkFlushWb.bits.misOffset.valid   := ParallelOR(wb_check_result.fixedMissPred) || wb_half_flush
-  checkFlushWb.bits.misOffset.bits    := Mux(wb_half_flush, wb_lastIdx, ParallelPriorityEncoder(wb_check_result.fixedMissPred))
-  checkFlushWb.bits.cfiOffset.valid   := ParallelOR(wb_check_result.fixedTaken)
-  checkFlushWb.bits.cfiOffset.bits    := ParallelPriorityEncoder(wb_check_result.fixedTaken)
-  checkFlushWb.bits.target            := Mux(wb_half_flush, wb_half_target, wb_check_result.fixedTarget(ParallelPriorityEncoder(wb_check_result.fixedMissPred)))
-  checkFlushWb.bits.jalTarget         := wb_check_result.fixedTarget(ParallelPriorityEncoder(VecInit(wb_pd.zip(wb_instr_valid).map{case (pd, v) => v && pd.isJal })))
+  checkFlushWb.bits.misOffset.valid   := ParallelOR(wb_check_result_stage2.fixedMissPred) || wb_half_flush
+  checkFlushWb.bits.misOffset.bits    := Mux(wb_half_flush, wb_lastIdx, ParallelPriorityEncoder(wb_check_result_stage2.fixedMissPred))
+  checkFlushWb.bits.cfiOffset.valid   := ParallelOR(wb_check_result_stage1.fixedTaken)
+  checkFlushWb.bits.cfiOffset.bits    := ParallelPriorityEncoder(wb_check_result_stage1.fixedTaken)
+  checkFlushWb.bits.target            := Mux(wb_half_flush, wb_half_target, wb_check_result_stage2.fixedTarget(ParallelPriorityEncoder(wb_check_result_stage2.fixedMissPred)))
+  checkFlushWb.bits.jalTarget         := wb_check_result_stage2.fixedTarget(ParallelPriorityEncoder(VecInit(wb_pd.zip(wb_instr_valid).map{case (pd, v) => v && pd.isJal })))
   checkFlushWb.bits.instrRange        := wb_instr_range.asTypeOf(Vec(PredictWidth, Bool()))
 
   toFtq.pdWb := Mux(wb_valid, checkFlushWb,  mmioFlushWb)
@@ -672,7 +675,7 @@ class NewIFU(implicit p: Parameters) extends RVCOREModule
   wb_redirect := checkFlushWb.bits.misOffset.valid && wb_valid
 
   /*write back flush type*/
-  val checkFaultType = wb_check_result.faultType
+  val checkFaultType = wb_check_result_stage2.faultType
   val checkJalFault =  wb_valid && checkFaultType.map(_.isjalFault).reduce(_||_)
   val checkRetFault =  wb_valid && checkFaultType.map(_.isRetFault).reduce(_||_)
   val checkTargetFault =  wb_valid && checkFaultType.map(_.istargetFault).reduce(_||_)
@@ -692,7 +695,7 @@ class NewIFU(implicit p: Parameters) extends RVCOREModule
   }
 
   /** performance counter */
-  val f3_perf_info     = RegEnable(f2_perf_info,  f2_fire)
+  val f3_perf_info     = RegEnable(next = f2_perf_info, enable = f2_fire)
   val f3_req_0    = io.toIbuffer.fire()
   val f3_req_1    = io.toIbuffer.fire() && f3_doubleLine
   val f3_hit_0    = io.toIbuffer.fire() && f3_perf_info.bank_hit(0)
@@ -732,3 +735,4 @@ class NewIFU(implicit p: Parameters) extends RVCOREModule
   RVCOREPerfAccumulate("miss_0_except_1",   f3_perf_info.miss_0_except_1 && io.toIbuffer.fire() )
   RVCOREPerfAccumulate("except_0",   f3_perf_info.except_0 && io.toIbuffer.fire() )
 }
+

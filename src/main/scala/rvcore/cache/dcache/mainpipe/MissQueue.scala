@@ -567,7 +567,6 @@ class MissQueue(edge: TLEdgeOut)(implicit p: Parameters) extends DCacheModule wi
     val difftest = Module(new DifftestRefillEvent)
     difftest.io.clock := clock
     difftest.io.coreid := io.hartId
-    difftest.io.cacheid := 1.U
     difftest.io.valid := io.refill_to_ldq.valid && io.refill_to_ldq.bits.hasdata && io.refill_to_ldq.bits.refill_done
     difftest.io.addr := io.refill_to_ldq.bits.addr
     difftest.io.data := io.refill_to_ldq.bits.data_raw.asTypeOf(difftest.io.data)
@@ -589,12 +588,13 @@ class MissQueue(edge: TLEdgeOut)(implicit p: Parameters) extends DCacheModule wi
   io.full := num_valids === cfg.nMissEntries.U
   RVCOREPerfHistogram("num_valids", num_valids, true.B, 0, cfg.nMissEntries, 1)
 
+  val perfValidCount = RegNext(PopCount(entries.map(entry => (!entry.io.primary_ready))))
   val perfEvents = Seq(
-    ("dcache_missq_req      ", io.req.fire()                                                                                                                                                                       ),
-    ("dcache_missq_1_4_valid", (PopCount(entries.map(entry => (!entry.io.primary_ready))) < (cfg.nMissEntries.U/4.U))                                                                                              ),
-    ("dcache_missq_2_4_valid", (PopCount(entries.map(entry => (!entry.io.primary_ready))) > (cfg.nMissEntries.U/4.U)) & (PopCount(entries.map(entry => (!entry.io.primary_ready))) <= (cfg.nMissEntries.U/2.U))    ),
-    ("dcache_missq_3_4_valid", (PopCount(entries.map(entry => (!entry.io.primary_ready))) > (cfg.nMissEntries.U/2.U)) & (PopCount(entries.map(entry => (!entry.io.primary_ready))) <= (cfg.nMissEntries.U*3.U/4.U))),
-    ("dcache_missq_4_4_valid", (PopCount(entries.map(entry => (!entry.io.primary_ready))) > (cfg.nMissEntries.U*3.U/4.U))                                                                                          ),
+    ("dcache_missq_req      ", io.req.fire()),
+    ("dcache_missq_1_4_valid", (perfValidCount < (cfg.nMissEntries.U/4.U))),
+    ("dcache_missq_2_4_valid", (perfValidCount > (cfg.nMissEntries.U/4.U)) & (perfValidCount <= (cfg.nMissEntries.U/2.U))),
+    ("dcache_missq_3_4_valid", (perfValidCount > (cfg.nMissEntries.U/2.U)) & (perfValidCount <= (cfg.nMissEntries.U*3.U/4.U))),
+    ("dcache_missq_4_4_valid", (perfValidCount > (cfg.nMissEntries.U*3.U/4.U))),
   )
   generatePerfEvent()
 }
